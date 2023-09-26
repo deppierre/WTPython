@@ -29,33 +29,114 @@
 # ex_stat.py
 #      This is an example demonstrating how to query database statistics.
 
-import os
+import os, bson, uuid, sys
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat
 
 def main():
     # Create a clean test directory for this run of the test program
-    os.system('rm -rf WT_HOME')
-    os.makedirs('WT_HOME')
-    # Connect to the database and open a session
-    conn = wiredtiger_open('WT_HOME', 'create,statistics=(all)')
-    session = conn.open_session()
+    # os.system('rm -rf WT_HOME')
+    # os.makedirs('WT_HOME')
 
-    # Create a simple table
-    session.create('table:access', 'key_format=S,value_format=S')
+    argvs = sys.argv
+    command = argvs[1]
+    mdbCatalog = '_mdb_catalog'
+
+    # Connect to the database and open a session
+    conn = wiredtiger_open('data/db', 'create,statistics=(all)')
+    newSession = conn.open_session()
+
+
 
     # Open a cursor and insert a record
-    cursor = session.open_cursor('table:access', None)
+    # cursor = session.open_cursor('table:access', None)
 
-    cursor['key'] = 'value'
-    cursor.close()
+    cursorCatalog = newSession.open_cursor(f'table:{mdbCatalog}', None)
+    myNewColl = "myCollFromWT"
+    newNs = f'myDbFromWT.{myNewColl}'
 
-    session.checkpoint()
+
+    if command == "new_collection":
+
+        while cursorCatalog.next() == 0:
+            maxKey = cursorCatalog.get_key()
+            doc = bson.decode(cursorCatalog.get_value())
+
+            if ('ns' in doc) and (doc['ns'] == newNs):
+                print(f"Error: This collection already exist ({doc['ns']})")
+                break
+        else:
+            newKey = maxKey + 1
+            insert_record(
+                newSession, 
+                mdbCatalog, 
+                [ newKey, {'md': {'ns': newNs, 'options': {'uuid': uuid.uuid1()}, 'indexes': [], 'prefix': -1}, 'ns': newNs, 'ident': 'collection-4-2293578740173577103'} ]
+            )
+
+    elif command == "drop_collection":
+        while cursorCatalog.next() == 0:
+            key = cursorCatalog.get_key()
+            doc = bson.decode(cursorCatalog.get_value())
+
+            if ('ns' in doc) and (doc['ns'] == newNs):
+                delete_record(
+                    newSession, 
+                    mdbCatalog, 
+                    key
+                )
+                break
+
+    else:
+        print("Command unknown")
+        exit(1)
+            
+    print(print_cursor(cursorCatalog))
+
+    cursorCatalog.close()
+
+    # keys, values = [ (k,v) for k,v in mdbCatalog ]
+
+    # newKey = max(keys) + 1
+
+    # 
+
+    # print(print_cursor(mdbCatalog))
+
+
+
+    # collCursor[1] = bson.encode({'name':'TestUpdate'})
+
+    # collCursor.set_value("")
+
+
+
+
+    newSession.checkpoint()
+
+    
     print(WIREDTIGER_VERSION_STRING)
-    print_database_stats(session)
-    print_file_stats(session)
-    print_overflow_pages(session)
-    print_derived_stats(session)
+    # print_database_stats(session)
+    # print_file_stats(session)
+    # print_overflow_pages(session)
+    # print_derived_stats(session)
     conn.close()
+
+def insert_record(session, table, record):
+    newCursor = session.open_cursor(f'table:{table}', None, "append")
+    k, v = record
+    newCursor[k] = bson.encode(v)
+    
+    newCursor.close()
+    print(f"Record {k} inserted")
+
+
+def delete_record(session, table, key):
+    newCursor = session.open_cursor(f'table:{table}', None)
+
+    newCursor.set_key(key)
+    newCursor.remove()
+
+    newCursor.close()
+    print(f"Record {key} deleted")
 
 def print_database_stats(session):
     statcursor = session.open_cursor("statistics:")
@@ -94,9 +175,13 @@ def print_derived_stats(session):
 
 def print_cursor(mycursor):
     while mycursor.next() == 0:
-        val = mycursor.get_value()
-        if val[1] != '0':
-            print('%s=%s' % (str(val[0]), str(val[1])))
+        key = str(mycursor.get_key())
+        value = bson.decode(mycursor.get_value())
+
+        print(value)
+
+        # if value[1] != '0':
+        #     print(f"Key={key}, Value={value}")
 
 if __name__ == "__main__":
     main()
