@@ -1,25 +1,45 @@
 #!/usr/bin/env python
 
 
-import os, bson, uuid, sys
+import bson, uuid, sys
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat
 
 class PyHack(object):
 
-    def __init__(self):
-        # Connect to the database and open a session
-        conn = wiredtiger_open('data/db', 'create,statistics=(all)')
+    def __init__(self, dbPath):
+        conn = wiredtiger_open(dbPath, 'create,statistics=(all)')
         self.mdbCatalog = '_mdb_catalog'
-        self.session = conn.open_session()
+
+        self.__session = conn.open_session()
+        print(f"Connection opened")
+
+    def checkpoint_session(self):
+        return self.__session.checkpoint()
+
+    def get_new_cursor(self, table):
+        return self.__session.open_cursor(f'table:{table}', None)
+
+    def get_stats(self, table=None):
+        if not table:
+            cursor = self.__session.open_cursor(f'statistics:', None)
+        else:
+            cursor = self.__session.open_cursor(f'statistics:table:{table}', None)
+
+        stats = []
+        while cursor.next() == 0:
+            stats.append(cursor.get_value())
+        
+        return stats
 
     def get_catalog(self):
         return self.mdbCatalog
     
     def close_session(self):
-        return self.session.close()
+        print(f"Connection closed")
+        return self.__session.close()
 
     def print_table(self, table):
-        cursor = self.session.open_cursor(f'table:{table}', None)
+        cursor = self.get_new_cursor(table)
         while cursor.next() == 0:
             key = str(cursor.get_key())
             value = bson.decode(cursor.get_value())
@@ -30,16 +50,17 @@ class PyHack(object):
             #     print(f"Key={key}, Value={value}")
 
     def insert_record(self, table, record):
-        cursor = self.session.open_cursor(f'table:{table}', None, "append")
-        k, v = record
-        cursor[k] = bson.encode(v)
+        cursor = self.get_new_cursor(table)
+        if len(record) == 2:
+            k, v = record
+            cursor[k] = bson.encode(v)
         
-        print(f"Record {k} inserted")
-        cursor.close()
+            print(f"Record {k} inserted")
+            cursor.close()
 
 
     def delete_record(self, table, key):
-        cursor = self.session.open_cursor(f'table:{table}', None)
+        cursor = self.get_new_cursor(table)
 
         cursor.set_key(key)
         cursor.remove()
@@ -49,35 +70,44 @@ class PyHack(object):
 
     def update_catalog(self, collection, command):
         newNs = f'myDbFromWT.{collection}'
-        cursor = self.session.open_cursor(f'table:{self.mdbCatalog}', None)
+        cursor = self.get_new_cursor(self.mdbCatalog)
+
 
         if command == "insert":
             while cursor.next() == 0:
                 maxKey = cursor.get_key()
                 doc = bson.decode(cursor.get_value())
 
-                if ('ns' in doc) and (doc['ns'] == newNs):
-                    print(f"Error: This collection already exist ({doc['ns']})")
-                    break
-                else:
-                    newKey = maxKey + 1
-                    self.insert_record(
-                        self.mdbCatalog, 
-                        [ newKey, {'md': {'ns': newNs, 'options': {'uuid': uuid.uuid1()}, 'indexes': [], 'prefix': -1}, 'ns': newNs, 'ident': 'collection-4--4331703230610760751'} ]
-                        # [ {'md': {'ns': 'myDbFromWT.myCollFromWT', 'options': {'uuid': UUID('5500e784-7a23-4c8e-9341-4b402c7b7e6f')}, 'indexes': [], 'prefix': -1}, 'ns': 'myDbFromWT.myCollFromWT', 'ident': 'collection-4--4331703230610760751'} ]
-                    )
+                if ('ns' in doc):
+                    if (doc['ns'] == newNs):
+                        print(f"Error: This collection already exist ({doc['ns']})")
+                        break
+            else:
+                newKey = maxKey + 1
+                self.insert_record(
+                    self.mdbCatalog, 
+                    [ newKey, {'md': {'ns': newNs, 'options': {'uuid': uuid.uuid1()}, 'indexes': [], 'prefix': -1}, 'ns': newNs, 'ident': 'collection-4--4331703230610760751'} ]
+                    # [ {'md': {'ns': 'myDbFromWT.myCollFromWT', 'options': {'uuid': UUID('5500e784-7a23-4c8e-9341-4b402c7b7e6f')}, 'indexes': [], 'prefix': -1}, 'ns': 'myDbFromWT.myCollFromWT', 'ident': 'collection-4--4331703230610760751'} ]
+                )
 
         elif command == "drop":
             while cursor.next() == 0:
                 key = cursor.get_key()
                 doc = bson.decode(cursor.get_value())
 
-                if ('ns' in doc) and (doc['ns'] == newNs):
-                    self.delete_record(
-                        self.mdbCatalog, 
-                        key
-                    )
-                    break
+                if ('ns' in doc):
+                    if (doc['ns'] == newNs):
+                        print(doc['ns'] )
+                        self.delete_record(
+                            self.mdbCatalog, 
+                            key
+                        )
+                        break
+            else:
+                raise Exception(f"update_catalog: collection doesn't exist ({newNs})")
+        else:
+            raise Exception("update_catalog: command uknown ('insert', 'drop')")
+
         cursor.close()
 
 
@@ -88,20 +118,31 @@ def main():
 
     myNewColl = "myCollFromWT"
 
-
-    wt = PyHack()
-    wt.update_catalog(myNewColl,"insert")
-
+    wt = PyHack("data/db")
     wtCatalog = wt.get_catalog()
-    print(wt.print_table(wtCatalog))
 
-    wt.close_session()
+
+    try:
+        wt.update_catalog(myNewColl, "drop")
+        try:
+            print(wt.print_table(wtCatalog))
+        except:
+            print("Error to read the table")
+    except Exception as Cat:
+        print(f"Error with catalog:\n{Cat}")
+    finally:
+        wt.checkpoint_session()
+        wt.close_session()
+
+
+
+
 
 
 
 
     # Open a cursor and insert a record
-    # cursor = session.open_cursor('table:access', None)
+    # cursor = session.get_new_cursor('table:access', None)
 
     # keys, values = [ (k,v) for k,v in mdbCatalog ]
 
@@ -126,24 +167,24 @@ def main():
 
 
 def print_database_stats(session):
-    statcursor = session.open_cursor("statistics:")
+    statcursor = session.get_new_cursor("statistics:")
     print_cursor(statcursor)
     statcursor.close()
 
 def print_file_stats(session):
-    fstatcursor = session.open_cursor("statistics:table:access")
+    fstatcursor = session.get_new_cursor("statistics:table:access")
     print_cursor(fstatcursor)
     fstatcursor.close()
 
 def print_overflow_pages(session):
-    ostatcursor = session.open_cursor("statistics:table:access")
+    ostatcursor = session.get_new_cursor("statistics:table:access")
     val = ostatcursor[stat.dsrc.btree_overflow]
     if val != 0:
         print('%s=%s' % (str(val[0]), str(val[1])))
     ostatcursor.close()
 
 def print_derived_stats(session):
-    dstatcursor = session.open_cursor("statistics:table:access")
+    dstatcursor = session.get_new_cursor("statistics:table:access")
     ckpt_size = dstatcursor[stat.dsrc.block_checkpoint_size][1]
     file_size = dstatcursor[stat.dsrc.block_size][1]
     percent = 0
