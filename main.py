@@ -1,97 +1,107 @@
 #!/usr/bin/env python
-#
-# Public Domain 2014-present MongoDB, Inc.
-# Public Domain 2008-2014 WiredTiger, Inc.
-#
-# This is free and unencumbered software released into the public domain.
-#
-# Anyone is free to copy, modify, publish, use, compile, sell, or
-# distribute this software, either in source code form or as a compiled
-# binary, for any purpose, commercial or non-commercial, and by any
-# means.
-#
-# In jurisdictions that recognize copyright laws, the author or authors
-# of this software dedicate any and all copyright interest in the
-# software to the public domain. We make this dedication for the benefit
-# of the public at large and to the detriment of our heirs and
-# successors. We intend this dedication to be an overt act of
-# relinquishment in perpetuity of all present and future rights to this
-# software under copyright law.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-# IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
-#
-# ex_stat.py
-#      This is an example demonstrating how to query database statistics.
+
 
 import os, bson, uuid, sys
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat
 
-def main():
-    # Create a clean test directory for this run of the test program
-    # os.system('rm -rf WT_HOME')
-    # os.makedirs('WT_HOME')
+class PyHack(object):
 
+    def __init__(self):
+        # Connect to the database and open a session
+        conn = wiredtiger_open('data/db', 'create,statistics=(all)')
+        self.mdbCatalog = '_mdb_catalog'
+        self.session = conn.open_session()
+
+    def get_catalog(self):
+        return self.mdbCatalog
+    
+    def close_session(self):
+        return self.session.close()
+
+    def print_table(self, table):
+        cursor = self.session.open_cursor(f'table:{table}', None)
+        while cursor.next() == 0:
+            key = str(cursor.get_key())
+            value = bson.decode(cursor.get_value())
+
+            print(value)
+
+            # if value[1] != '0':
+            #     print(f"Key={key}, Value={value}")
+
+    def insert_record(self, table, record):
+        cursor = self.session.open_cursor(f'table:{table}', None, "append")
+        k, v = record
+        cursor[k] = bson.encode(v)
+        
+        print(f"Record {k} inserted")
+        cursor.close()
+
+
+    def delete_record(self, table, key):
+        cursor = self.session.open_cursor(f'table:{table}', None)
+
+        cursor.set_key(key)
+        cursor.remove()
+
+        print(f"Record {key} deleted")
+        cursor.close()
+
+    def update_catalog(self, collection, command):
+        newNs = f'myDbFromWT.{collection}'
+        cursor = self.session.open_cursor(f'table:{self.mdbCatalog}', None)
+
+        if command == "insert":
+            while cursor.next() == 0:
+                maxKey = cursor.get_key()
+                doc = bson.decode(cursor.get_value())
+
+                if ('ns' in doc) and (doc['ns'] == newNs):
+                    print(f"Error: This collection already exist ({doc['ns']})")
+                    break
+                else:
+                    newKey = maxKey + 1
+                    self.insert_record(
+                        self.mdbCatalog, 
+                        [ newKey, {'md': {'ns': newNs, 'options': {'uuid': uuid.uuid1()}, 'indexes': [], 'prefix': -1}, 'ns': newNs, 'ident': 'collection-4--4331703230610760751'} ]
+                        # [ {'md': {'ns': 'myDbFromWT.myCollFromWT', 'options': {'uuid': UUID('5500e784-7a23-4c8e-9341-4b402c7b7e6f')}, 'indexes': [], 'prefix': -1}, 'ns': 'myDbFromWT.myCollFromWT', 'ident': 'collection-4--4331703230610760751'} ]
+                    )
+
+        elif command == "drop":
+            while cursor.next() == 0:
+                key = cursor.get_key()
+                doc = bson.decode(cursor.get_value())
+
+                if ('ns' in doc) and (doc['ns'] == newNs):
+                    self.delete_record(
+                        self.mdbCatalog, 
+                        key
+                    )
+                    break
+        cursor.close()
+
+
+
+def main():
     argvs = sys.argv
     command = argvs[1]
-    mdbCatalog = '_mdb_catalog'
 
-    # Connect to the database and open a session
-    conn = wiredtiger_open('data/db', 'create,statistics=(all)')
-    newSession = conn.open_session()
+    myNewColl = "myCollFromWT"
+
+
+    wt = PyHack()
+    wt.update_catalog(myNewColl,"insert")
+
+    wtCatalog = wt.get_catalog()
+    print(wt.print_table(wtCatalog))
+
+    wt.close_session()
+
 
 
 
     # Open a cursor and insert a record
     # cursor = session.open_cursor('table:access', None)
-
-    cursorCatalog = newSession.open_cursor(f'table:{mdbCatalog}', None)
-    myNewColl = "myCollFromWT"
-    newNs = f'myDbFromWT.{myNewColl}'
-
-
-    if command == "new_collection":
-
-        while cursorCatalog.next() == 0:
-            maxKey = cursorCatalog.get_key()
-            doc = bson.decode(cursorCatalog.get_value())
-
-            if ('ns' in doc) and (doc['ns'] == newNs):
-                print(f"Error: This collection already exist ({doc['ns']})")
-                break
-        else:
-            newKey = maxKey + 1
-            insert_record(
-                newSession, 
-                mdbCatalog, 
-                [ newKey, {'md': {'ns': newNs, 'options': {'uuid': uuid.uuid1()}, 'indexes': [], 'prefix': -1}, 'ns': newNs, 'ident': 'collection-4-2293578740173577103'} ]
-            )
-
-    elif command == "drop_collection":
-        while cursorCatalog.next() == 0:
-            key = cursorCatalog.get_key()
-            doc = bson.decode(cursorCatalog.get_value())
-
-            if ('ns' in doc) and (doc['ns'] == newNs):
-                delete_record(
-                    newSession, 
-                    mdbCatalog, 
-                    key
-                )
-                break
-
-    else:
-        print("Command unknown")
-        exit(1)
-            
-    print(print_cursor(cursorCatalog))
-
-    cursorCatalog.close()
 
     # keys, values = [ (k,v) for k,v in mdbCatalog ]
 
@@ -108,35 +118,12 @@ def main():
     # collCursor.set_value("")
 
 
-
-
-    newSession.checkpoint()
-
     
-    print(WIREDTIGER_VERSION_STRING)
     # print_database_stats(session)
     # print_file_stats(session)
     # print_overflow_pages(session)
     # print_derived_stats(session)
-    conn.close()
 
-def insert_record(session, table, record):
-    newCursor = session.open_cursor(f'table:{table}', None, "append")
-    k, v = record
-    newCursor[k] = bson.encode(v)
-    
-    newCursor.close()
-    print(f"Record {k} inserted")
-
-
-def delete_record(session, table, key):
-    newCursor = session.open_cursor(f'table:{table}', None)
-
-    newCursor.set_key(key)
-    newCursor.remove()
-
-    newCursor.close()
-    print(f"Record {key} deleted")
 
 def print_database_stats(session):
     statcursor = session.open_cursor("statistics:")
@@ -173,15 +160,7 @@ def print_derived_stats(session):
         print("Write amplification is " + '{:.2f}'.format(fs_writes / (app_insert + app_remove + app_update)))
     dstatcursor.close()
 
-def print_cursor(mycursor):
-    while mycursor.next() == 0:
-        key = str(mycursor.get_key())
-        value = bson.decode(mycursor.get_value())
 
-        print(value)
-
-        # if value[1] != '0':
-        #     print(f"Key={key}, Value={value}")
 
 if __name__ == "__main__":
     main()
