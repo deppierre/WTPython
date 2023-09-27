@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
-
-import bson, uuid, sys
+import bson, uuid, sys, random
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat
+from bson.binary import Binary
 
 class PyHack(object):
 
@@ -11,7 +11,7 @@ class PyHack(object):
         self.mdbCatalog = '_mdb_catalog'
 
         self.__session = conn.open_session()
-        print(f"Connection opened")
+        self.print_message("connection", f"connection opened", "info")
 
     def checkpoint_session(self):
         return self.__session.checkpoint()
@@ -35,7 +35,7 @@ class PyHack(object):
         return self.mdbCatalog
     
     def close_session(self):
-        print(f"Connection closed")
+        self.print_message("connection", f"connection closed", "info")
         return self.__session.close()
 
     def print_table(self, table):
@@ -55,7 +55,7 @@ class PyHack(object):
             k, v = record
             cursor[k] = bson.encode(v)
         
-            print(f"Record {k} inserted")
+            self.print_message("insert", f"record {k} inserted", "info")
             cursor.close()
 
 
@@ -65,7 +65,7 @@ class PyHack(object):
         cursor.set_key(key)
         cursor.remove()
 
-        print(f"Record {key} deleted")
+        self.print_message("delete", f"record {key} deleted", "info")
         cursor.close()
 
     def update_catalog(self, collection, command):
@@ -73,21 +73,29 @@ class PyHack(object):
         cursor = self.get_new_cursor(self.mdbCatalog)
 
 
-        if command == "insert":
+        if command == "create":
             while cursor.next() == 0:
                 maxKey = cursor.get_key()
                 doc = bson.decode(cursor.get_value())
 
                 if ('ns' in doc):
                     if (doc['ns'] == newNs):
-                        print(f"Error: This collection already exist ({doc['ns']})")
+                        self.print_message("catalog", f"Insert error. This collection already exist ({doc['ns']})", "warning")
                         break
             else:
                 newKey = maxKey + 1
+                uuid_binary = Binary(uuid.uuid4().bytes, 4)
+
                 self.insert_record(
                     self.mdbCatalog, 
-                    [ newKey, {'md': {'ns': newNs, 'options': {'uuid': uuid.uuid1()}, 'indexes': [], 'prefix': -1}, 'ns': newNs, 'ident': 'collection-4--4331703230610760751'} ]
-                    # [ {'md': {'ns': 'myDbFromWT.myCollFromWT', 'options': {'uuid': UUID('5500e784-7a23-4c8e-9341-4b402c7b7e6f')}, 'indexes': [], 'prefix': -1}, 'ns': 'myDbFromWT.myCollFromWT', 'ident': 'collection-4--4331703230610760751'} ]
+                    [ newKey, {
+                        'md': {
+                            'ns': newNs, 
+                            'options': {'uuid': uuid_binary}}, 
+                            'ns': newNs, 
+                            'ident': 'collection-4--4331703230610760751'
+                        } 
+                    ]
                 )
 
         elif command == "drop":
@@ -104,32 +112,33 @@ class PyHack(object):
                         )
                         break
             else:
-                raise Exception(f"update_catalog: collection doesn't exist ({newNs})")
+                raise Exception(f"update_catalog: namespace doesn't exist ({newNs})")
         else:
-            raise Exception("update_catalog: command uknown ('insert', 'drop')")
+            raise Exception("update_catalog: command uknown ('create', 'drop')")
 
         cursor.close()
+
+    def print_message(self, module, trace, level="info"):
+        print(f"{module} - {trace}")
 
 
 
 def main():
     argvs = sys.argv
-    command = argvs[1]
 
     myNewColl = "myCollFromWT"
 
     wt = PyHack("data/db")
-    wtCatalog = wt.get_catalog()
-
+    wtCatalogName = wt.get_catalog()
 
     try:
-        wt.update_catalog(myNewColl, "drop")
+        wt.update_catalog(myNewColl, "create")
         try:
-            print(wt.print_table(wtCatalog))
+            print(wt.print_table(wtCatalogName))
         except:
             print("Error to read the table")
     except Exception as Cat:
-        print(f"Error with catalog:\n{Cat}")
+        wt.print_message("catalog",Cat, "warning")
     finally:
         wt.checkpoint_session()
         wt.close_session()
