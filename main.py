@@ -122,7 +122,6 @@ class PyHack(object):
         print(f"{module} - {trace}")
 
 
-
 def main():
     argvs = sys.argv
 

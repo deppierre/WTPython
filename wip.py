@@ -20,6 +20,15 @@ class PyHack(object):
 
     def get_new_cursor(self, table):
         return self.__session.open_cursor(f'table:{table}', None)
+    
+    def get_k_v(self, table):
+        k_v = {}
+        cursor = self.get_new_cursor(table)
+
+        while cursor.next() == 0:
+            k_v[cursor.get_key()] = bson.decode(cursor.get_value())
+
+        return k_v
 
     def get_stats(self, table=None):
         if not table:
@@ -39,17 +48,15 @@ class PyHack(object):
     def create_table(self, table):
         self.__session.create(f"table:{table}", "key_format=S,value_format=S")
 
+    def drop_table(self, table):
+        self.__session.drop(f"table:{table}")
+
     def close_session(self):
         self.print_message("connection", f"connection closed", "info")
         return self.__session.close()
 
-    def print_table(self, table):
-        cursor = self.get_new_cursor(table)
-        while cursor.next() == 0:
-            key = str(cursor.get_key())
-            value = bson.decode(cursor.get_value())
-
-            print(value)
+    def print_value(self, table, key=None):
+        print(self.get_k_v(table))
 
             # if value[1] != '0':
             #     print(f"Key={key}, Value={value}")
@@ -80,83 +87,72 @@ class PyHack(object):
         self.print_message("delete", f"record {key} deleted", "info")
         cursor.close()
 
-    def update_catalog(self, collection, command):
-        newNs = f'myDbFromWT.{collection}'
-        cursor = self.get_new_cursor(self.mdbCatalog)
-
-
-        if command == "create":
-            while cursor.next() == 0:
-                maxKey = cursor.get_key()
-                doc = bson.decode(cursor.get_value())
-
-                if ('ns' in doc):
-                    if (doc['ns'] == newNs):
-                        self.print_message("catalog", f"this collection already exist ({doc['ns']})", "warning")
-                        break
-            else:
-                newKey = maxKey + 1
-                uuid_binary = Binary(uuid.uuid4().bytes, 4)
-
-                self.insert_record(
-                    self.mdbCatalog, 
-                    [ newKey, {
-                        'md': {
-                            'ns': newNs, 
-                            'options': {'uuid': uuid_binary}}, 
-                            'ns': newNs, 
-                            'ident': collection
-                        } 
-                    ]
-                )
-
-        elif command == "drop":
-            while cursor.next() == 0:
-                key = cursor.get_key()
-                doc = bson.decode(cursor.get_value())
-
-                if ('ns' in doc):
-                    if (doc['ns'] == newNs):
-                        print(doc['ns'] )
-                        self.delete_record(
-                            self.mdbCatalog, 
-                            key
-                        )
-                        break
-            else:
-                raise Exception(f"update_catalog: namespace doesn't exist ({newNs})")
-        else:
-            raise Exception("update_catalog: command uknown ('create', 'drop')")
-
-        cursor.close()
-
     def print_message(self, module, trace, level="info"):
         print(f"{module} - {trace}")
 
 
 
 def main():
-    argvs = sys.argv
-
-    myNewColl = "myCollFromWT"
-
     wt = PyHack("data/db")
     wtCatalogName = wt.get_catalog()
 
-    try:
-        wt.update_catalog(myNewColl, "create")
-        try:
-            wt.create_table(myNewColl)
-            wt.print_table(wtCatalogName)
-            # wt.insert_record(myNewColl,[1,{'test':'OK'}] )
-        except Exception as Insert:
-            wt.print_message("insert",Insert, "Error")
-            traceback.print_exc()
-    except Exception as Cat:
-        wt.print_message("catalog",Cat, "warning")
-    finally:
-        wt.checkpoint_session()
-        wt.close_session()
+    try: 
+        argvs = sys.argv
+        newCollection = argvs[1]
+    except:
+        print("No collection set")
+        newCollection = None
+
+    if newCollection is not None:
+        wt.create_table(newCollection)
+        newNs = f'myDbFromWT.{newCollection}'
+
+        catalog = wt.get_k_v(wt.mdbCatalog)
+
+        for k in wt.get_k_v(wt.mdbCatalog):
+            newKey = k + 1
+            item = catalog[k]
+
+            if ('ns' in item):
+                if (item['ns'] == newNs):
+                    print(f"this collection already exist ({item['ns']})")
+                    collExist = True
+
+        if not collExist:
+            wt.insert_record(
+                wt.mdbCatalog, 
+                [ newKey, {
+                    'md': {
+                        'ns': newNs, 
+                        'options': {'uuid': Binary(uuid.uuid4().bytes, 4)}}, 
+                        'ns': newNs, 
+                        'ident': newCollection
+                    } 
+                ]
+            )
+        
+        wt.print_value(wtCatalogName)
+    else:
+        print("Drop table")
+
+        catalog = wt.get_k_v(wtCatalogName)
+        last_item = list(catalog.keys())[-1]
+
+        if not catalog[last_item]["ident"].lower().startswith(("collection", "index")):
+            wt.delete_record(
+                wt.mdbCatalog, 
+                last_item
+            )
+
+
+        # else:
+        #     maxKey = value
+        #     print(maxKey)
+        #     wt.drop_table()
+        # wt.update_catalog(myNewColl, "drop")
+
+    wt.checkpoint_session()
+    wt.close_session()
 
 
 
