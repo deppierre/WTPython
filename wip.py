@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 
-import bson, uuid, sys, random, re, os
+import bson, uuid, sys, re, os
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
 from bson.binary import Binary
-import traceback
 
 
 class PyHack(object):
@@ -14,16 +13,17 @@ class PyHack(object):
         self.dbPath = dbPath
 
         self.collection = None
+        self.key = None
         self.value = None
 
         self.__session = conn.open_session()
-        self.print_message("connection", f"connection opened", "info")
+        print("Connection opened")
 
     def checkpoint_session(self):
         return self.__session.checkpoint()
 
     def get_new_cursor(self, table):
-        return self.__session.open_cursor(f'table:{table}', None)
+        return self.__session.open_cursor(f'table:{table}', None, "append")
     
     def get_k_v(self, table):
         k_v = {}
@@ -35,8 +35,8 @@ class PyHack(object):
         return k_v
     
     def get_new_k(self, table):
-        for k in self.get_k_v(table):
-            newKey = k + 1
+        for key in self.get_k_v(table):
+            newKey = key + 1
 
         return newKey
 
@@ -62,29 +62,29 @@ class PyHack(object):
         self.__session.drop(f"table:{table}")
 
     def close_session(self):
-        self.print_message("connection", f"connection closed", "info")
+        print("Connection closed")
         return self.__session.close()
 
     def get_values(self, table, key=None):
-        return self.get_k_v(table)
+        if key is not None:
+            cursor = self.get_new_cursor(table)
+            return bson.decode(cursor[key])
+        else:
+            return self.get_k_v(table)
 
             # if value[1] != '0':
             #     print(f"Key={key}, Value={value}")
 
-    def insert_record(self, table, record):
-        cursor = self.get_new_cursor(table)
-        if len(record) == 2:
-            k, v = record
+    #Ex for records: {"key1":"value1", "key2":"value2", ...}
+    def insert_records(self, table, records):
+        for record in records.keys():
+            key = record
+            value = bson.encode(records[record])
 
-
-            cursor.set_key(k)
-            cursor.set_value(bson.encode(v))
-
-            # cursor.set_key('key'+ str(k))
-            # cursor.set_value('value' + str(bson.encode(v)))
-            cursor.insert()
-        
-            self.print_message("insert", f"record {k} inserted", "info")
+            cursor = self.get_new_cursor(table)
+            cursor[key] = value
+            
+            print(f"Record {key} inserted")
             cursor.close()
 
 
@@ -94,12 +94,8 @@ class PyHack(object):
         cursor.set_key(key)
         cursor.remove()
 
-        self.print_message("delete", f"record {key} deleted", "info")
+        print(f"Record {key} deleted")
         cursor.close()
-
-    def print_message(self, module, trace, level="info"):
-        print(f"{module} - {trace}")
-
 
 
 def main():
@@ -133,19 +129,22 @@ def main():
             newNs = f"myDbFromWT.{wt.collection }"
             newKey = wt.get_new_k(wt.mdbCatalog)
             #new entry in catalogue
-            wt.insert_record(
+
+            wt.insert_records(
                 wt.mdbCatalog, 
-                [ newKey, {
-                    'md': {
-                        'ns': newNs, 
-                        'options': {'uuid': Binary(uuid.uuid4().bytes, 4)}}, 
+                { 
+                    newKey:
+                    {
+                        'md': {
+                            'ns': newNs, 
+                            'options': {'uuid': Binary(uuid.uuid4().bytes, 4)}
+                        }, 
                         'ns': newNs, 
                         'ident': wt.collection 
-                    } 
-                ]
+                    }
+                }
             )
-
-            print(wt.get_values(wt.mdbCatalog))
+            print(f"Catalog updated with the new collection")
     #Check if value is set
         if wt.value is not None:
             print("Insert value")
@@ -159,7 +158,7 @@ def main():
         try: 
             while re.match(r'^(?!collection|index|WiredTiger|_mdb|sizeStorer)\w+$', catalog[last_item]["ident"]) is not None:
                 #add last_item
-                print(f"Last item to delete: {wt.get_values(wtCatalogName, last_item)}")
+                print(f"Last item (id: {last_item}) to delete: {wt.get_values(wtCatalogName, last_item)}")
                 wt.delete_record(
                     wt.mdbCatalog, 
                     last_item
@@ -183,8 +182,8 @@ def main():
         # wt.update_catalog(myNewColl, "drop")
 
     print("Checkpoint ...")
-
     wt.checkpoint_session()
+
     wt.close_session()
 
 
