@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import bson, uuid, sys, random
+import bson, uuid, sys, random, re, os
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat
 from bson.binary import Binary
 import traceback
@@ -11,6 +11,7 @@ class PyHack(object):
     def __init__(self, dbPath):
         conn = wiredtiger_open(dbPath, 'create,statistics=(all)')
         self.mdbCatalog = '_mdb_catalog'
+        self.dbPath = dbPath
 
         self.__session = conn.open_session()
         self.print_message("connection", f"connection opened", "info")
@@ -133,17 +134,28 @@ def main():
         
         wt.print_value(wtCatalogName)
     else:
-        print("Drop table")
+        print("Mode: drop collection")
 
         catalog = wt.get_k_v(wtCatalogName)
         last_item = list(catalog.keys())[-1]
 
-        if not catalog[last_item]["ident"].lower().startswith(("collection", "index")):
-            wt.delete_record(
-                wt.mdbCatalog, 
-                last_item
-            )
+        try: 
+            if not catalog[last_item]["ident"].lower().startswith(("collection", "index")):
+                wt.print_value(wtCatalogName, last_item)
+                wt.delete_record(
+                    wt.mdbCatalog, 
+                    last_item
+                )
+        except KeyError:
+            print("Nothing to update in catalog")
 
+        for file in os.listdir(wt.dbPath):
+            match = re.match(r'^(?!collection|index|WiredTiger|_mdb|sizeStorer)(\w+)\.wt$', file)
+
+            if match is not None:
+                tableName = match.group(1)
+                wt.drop_table(tableName)
+                print(f"Table: {tableName} is dropped")
 
         # else:
         #     maxKey = value
