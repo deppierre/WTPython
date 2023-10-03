@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import bson, uuid, sys, random, re, os
-from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat
+from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
 from bson.binary import Binary
 import traceback
 
@@ -12,6 +12,9 @@ class PyHack(object):
         conn = wiredtiger_open(dbPath, 'create,statistics=(all)')
         self.mdbCatalog = '_mdb_catalog'
         self.dbPath = dbPath
+
+        self.collection = None
+        self.value = None
 
         self.__session = conn.open_session()
         self.print_message("connection", f"connection opened", "info")
@@ -30,6 +33,12 @@ class PyHack(object):
             k_v[cursor.get_key()] = bson.decode(cursor.get_value())
 
         return k_v
+    
+    def get_new_k(self, table):
+        for k in self.get_k_v(table):
+            newKey = k + 1
+
+        return newKey
 
     def get_stats(self, table=None):
         if not table:
@@ -56,8 +65,8 @@ class PyHack(object):
         self.print_message("connection", f"connection closed", "info")
         return self.__session.close()
 
-    def print_value(self, table, key=None):
-        print(self.get_k_v(table))
+    def get_values(self, table, key=None):
+        return self.get_k_v(table)
 
             # if value[1] != '0':
             #     print(f"Key={key}, Value={value}")
@@ -97,29 +106,33 @@ def main():
     wt = PyHack("data/db")
     wtCatalogName = wt.get_catalog()
 
+    #collect arguments
     try: 
         argvs = sys.argv
-        newCollection = argvs[1]
-    except:
-        print("No collection set")
-        newCollection = None
+        wt.collection = argvs[1]
+        wt.value = argvs[2]
+    except IndexError:
+        if not wt.collection :
+            print("No collection set")
+        elif not wt.value:
+            print("No value set")
+            
 
-    if newCollection is not None:
-        wt.create_table(newCollection)
-        newNs = f'myDbFromWT.{newCollection}'
+    #Check if collection is set, if not create it
+    if wt.collection  is not None:
+        try:
+            collDocuments = wt.get_values(wt.collection)
+            print(f"Documents in the collection: {collDocuments}")
 
-        catalog = wt.get_k_v(wt.mdbCatalog)
+            # if documents:
+            #     print(f"Document in the {wt.collection} collection:\n{documents}")
+        except _wiredtiger.WiredTigerError:
+            wt.create_table(wt.collection)
+            print(f"Collection {wt.collection} created")
 
-        for k in wt.get_k_v(wt.mdbCatalog):
-            newKey = k + 1
-            item = catalog[k]
-
-            if ('ns' in item):
-                if (item['ns'] == newNs):
-                    print(f"this collection already exist ({item['ns']})")
-                    collExist = True
-
-        if not collExist:
+            newNs = f"myDbFromWT.{wt.collection }"
+            newKey = wt.get_new_k(wt.mdbCatalog)
+            #new entry in catalogue
             wt.insert_record(
                 wt.mdbCatalog, 
                 [ newKey, {
@@ -127,28 +140,34 @@ def main():
                         'ns': newNs, 
                         'options': {'uuid': Binary(uuid.uuid4().bytes, 4)}}, 
                         'ns': newNs, 
-                        'ident': newCollection
+                        'ident': wt.collection 
                     } 
                 ]
             )
-        
-        wt.print_value(wtCatalogName)
+
+            print(wt.get_values(wt.mdbCatalog))
+    #Check if value is set
+        if wt.value is not None:
+            print("Insert value")
+    #Drop all user collections
     else:
-        print("Mode: drop collection")
+        print("Mode: drop collection(s)")
 
         catalog = wt.get_k_v(wtCatalogName)
         last_item = list(catalog.keys())[-1]
-
+        #update catalog
         try: 
-            if not catalog[last_item]["ident"].lower().startswith(("collection", "index")):
-                wt.print_value(wtCatalogName, last_item)
+            while re.match(r'^(?!collection|index|WiredTiger|_mdb|sizeStorer)\w+$', catalog[last_item]["ident"]) is not None:
+                #add last_item
+                print(f"Last item to delete: {wt.get_values(wtCatalogName, last_item)}")
                 wt.delete_record(
                     wt.mdbCatalog, 
                     last_item
                 )
+                last_item -= 1
         except KeyError:
             print("Nothing to update in catalog")
-
+        #Drop wt tables
         for file in os.listdir(wt.dbPath):
             match = re.match(r'^(?!collection|index|WiredTiger|_mdb|sizeStorer)(\w+)\.wt$', file)
 
@@ -162,6 +181,8 @@ def main():
         #     print(maxKey)
         #     wt.drop_table()
         # wt.update_catalog(myNewColl, "drop")
+
+    print("Checkpoint ...")
 
     wt.checkpoint_session()
     wt.close_session()
