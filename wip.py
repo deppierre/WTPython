@@ -84,6 +84,7 @@ class PyHack(object):
     #Ex for records: {"id1":{ "key1":"value1" }, "id2": { "key2":"value2" }, ...}
     def insert_records(self, table, records):
         for key in records.keys():
+            print(records[key])
             value = bson.encode(records[key])
 
             cursor = self.get_new_cursor(table)
@@ -135,6 +136,7 @@ def main():
 
             newNs = wt.database + "." + wt.collection 
             newKey = wt.get_new_k(wt.mdbCatalog)
+            uuid_binary = Binary(uuid.uuid4().bytes, 4)
             #new entry in catalogue
 
             wt.insert_records(
@@ -144,10 +146,9 @@ def main():
                     {
                         'md': {
                             'ns': newNs, 
-                            'options': {'uuid': Binary(uuid.uuid4().bytes, 4)}
-                        }, 
-                        'ns': newNs, 
-                        'ident': ident
+                            'options': {'uuid': uuid_binary}}, 
+                            'ns': newNs, 
+                            'ident': ident
                     }
                 }
             )

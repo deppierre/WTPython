@@ -53,6 +53,7 @@ class PyHack(object):
         cursor = self.get_new_cursor(table)
         if len(record) == 2:
             k, v = record
+            print(v)
             cursor[k] = bson.encode(v)
         
             self.print_message("insert", f"record {k} inserted", "info")
@@ -93,7 +94,7 @@ class PyHack(object):
                             'ns': newNs, 
                             'options': {'uuid': uuid_binary}}, 
                             'ns': newNs, 
-                            'ident': 'collection-4--4331703230610760751'
+                            'ident': 'collection-4--3929816486202239377'
                         } 
                     ]
                 )
@@ -131,7 +132,7 @@ def main():
     wtCatalogName = wt.get_catalog()
 
     try:
-        wt.update_catalog(myNewColl, "create")
+        wt.update_catalog(myNewColl, "drop")
         try:
             print(wt.print_table(wtCatalogName))
         except:
