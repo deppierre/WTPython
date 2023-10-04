@@ -35,10 +35,7 @@ class PyHack(object):
         cursor = self.get_new_cursor(table)
 
         while cursor.next() == 0:
-            try:
-                k_v[cursor.get_key()] = bson.decode(cursor.get_value())
-            except TypeError:
-                k_v[cursor.get_key()] = cursor.get_value()
+            k_v[cursor.get_key()] = bson.decode(cursor.get_value())
 
         return k_v
     
@@ -65,7 +62,7 @@ class PyHack(object):
         return self.mdbCatalog
     
     def create_table(self, table):
-        self.__session.create(f"table:{table}", "key_format=S,value_format=S")
+        self.__session.create(f"table:{table}", "key_format=S,value_format=u")
 
     def drop_table(self, table):
         self.__session.drop(f"table:{table}")
@@ -86,18 +83,14 @@ class PyHack(object):
 
     #Ex for records: {"id1":{ "key1":"value1" }, "id2": { "key2":"value2" }, ...}
     def insert_records(self, table, records):
-        for record in records.keys():
-            key = record
-            value = bson.encode(records[record])
+        for key in records.keys():
+            value = bson.encode(records[key])
 
             cursor = self.get_new_cursor(table)
 
-            cursor.set_key(key)
-            cursor.set_value("lol")
+            cursor[key] = value
 
-            cursor.insert()
-            
-            print(f"Record {key} inserted")
+            print(f"--Record {key} inserted")
             cursor.close()
 
 
@@ -107,7 +100,7 @@ class PyHack(object):
         cursor.set_key(key)
         cursor.remove()
 
-        print(f"Record {key} deleted")
+        print(f"--Record {key} deleted")
         cursor.close()
 
 
@@ -127,19 +120,20 @@ def main():
         elif not wt.values:
             print("No value set")
 
+    print(wt.get_values(wtCatalogName))
     #Check if collection is set, if not create it
     if wt.collection is not None:
         try:
             ident = wt.prefix + "_" + wt.collection
 
             collDocuments = wt.get_values(ident)
-            print(f"Documents in the collection ({ident}): {collDocuments}")
+            print(f"Documents in the collection ({wt.collection}): {collDocuments}")
 
         except _wiredtiger.WiredTigerError:
             wt.create_table(ident)
-            print(f"Collection {wt.collection} created")
+            print(f"--Collection {wt.collection} created")
 
-            newNs = wt.database + "." + wt.collection, 
+            newNs = wt.database + "." + wt.collection 
             newKey = wt.get_new_k(wt.mdbCatalog)
             #new entry in catalogue
 
@@ -157,21 +151,21 @@ def main():
                     }
                 }
             )
-            print(f"Catalog updated with the new collection")
+            print(f"--Catalog updated with the new collection")
 
     #Check if value is set
         if wt.values:
-            print("Insert value")
+            print("Insert value(s):")
 
             for value in wt.values:   
-                newKey = str(wt.get_new_k(ident))
+                newKey = wt.get_new_k(ident)
 
                 wt.insert_records(
                     ident, 
                     {
-                        newKey: 
+                        str(newKey): 
                         {
-                            'test': 'test'
+                            'field': value
                         }
                     }
                 )
@@ -182,9 +176,10 @@ def main():
 
         catalog = wt.get_k_v(wtCatalogName)
         last_item = list(catalog.keys())[-1]
+
         #update catalog
         try: 
-            while catalog[last_item]["ident"].startswith(wt.prefix):
+            while catalog[last_item]["md"]["ns"].startswith(wt.prefix):
                 print(f"Last item (id: {last_item}) to delete: {wt.get_values(wtCatalogName, last_item)}")
                 wt.delete_record(
                     wt.mdbCatalog, 
@@ -193,11 +188,14 @@ def main():
                 last_item -= 1
         except KeyError:
             print("Nothing to update in catalog")
-        #Drop wt tables
-        for file in os.listdir(wt.dbPath):
-            if file.startswith(wt.prefix):
-                wt.drop_table(file.replace(".wt", ""))
-                print(f"Table: {file} is dropped")
+        except TypeError:
+            print(f"Error to remove item {last_item}: {catalog[last_item]}")
+        else:
+            #Drop wt tables
+            for file in os.listdir(wt.dbPath):
+                if file.startswith(wt.prefix):
+                    wt.drop_table(file.replace(".wt", ""))
+                    print(f"Table: {file} is dropped")
 
     print("Checkpoint ...")
     wt.checkpoint_session()
