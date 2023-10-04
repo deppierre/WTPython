@@ -9,12 +9,17 @@ class PyHack(object):
 
     def __init__(self, dbPath):
         conn = wiredtiger_open(dbPath, 'create,statistics=(all)')
-        self.mdbCatalog = '_mdb_catalog'
         self.dbPath = dbPath
+        self.prefix = "_" + self.__class__.__name__
 
+        #MongoDB
+        self.database = self.prefix
         self.collection = None
         self.key = None
-        self.value = None
+        self.values = []
+
+        #WiredTiger
+        self.mdbCatalog = '_mdb_catalog'
 
         self.__session = conn.open_session()
         print("Connection opened")
@@ -30,13 +35,17 @@ class PyHack(object):
         cursor = self.get_new_cursor(table)
 
         while cursor.next() == 0:
-            k_v[cursor.get_key()] = bson.decode(cursor.get_value())
+            try:
+                k_v[cursor.get_key()] = bson.decode(cursor.get_value())
+            except TypeError:
+                k_v[cursor.get_key()] = cursor.get_value()
 
         return k_v
     
     def get_new_k(self, table):
+        newKey = 0
         for key in self.get_k_v(table):
-            newKey = key + 1
+            newKey = int(key) + 1
 
         return newKey
 
@@ -75,14 +84,18 @@ class PyHack(object):
             # if value[1] != '0':
             #     print(f"Key={key}, Value={value}")
 
-    #Ex for records: {"key1":"value1", "key2":"value2", ...}
+    #Ex for records: {"id1":{ "key1":"value1" }, "id2": { "key2":"value2" }, ...}
     def insert_records(self, table, records):
         for record in records.keys():
             key = record
             value = bson.encode(records[record])
 
             cursor = self.get_new_cursor(table)
-            cursor[key] = value
+
+            cursor.set_key(key)
+            cursor.set_value("lol")
+
+            cursor.insert()
             
             print(f"Record {key} inserted")
             cursor.close()
@@ -106,27 +119,27 @@ def main():
     try: 
         argvs = sys.argv
         wt.collection = argvs[1]
-        wt.value = argvs[2]
+        for argv in argvs[2:]:
+            wt.values.append(argv)
     except IndexError:
         if not wt.collection :
             print("No collection set")
-        elif not wt.value:
+        elif not wt.values:
             print("No value set")
-            
 
     #Check if collection is set, if not create it
-    if wt.collection  is not None:
+    if wt.collection is not None:
         try:
-            collDocuments = wt.get_values(wt.collection)
-            print(f"Documents in the collection: {collDocuments}")
+            ident = wt.prefix + "_" + wt.collection
 
-            # if documents:
-            #     print(f"Document in the {wt.collection} collection:\n{documents}")
+            collDocuments = wt.get_values(ident)
+            print(f"Documents in the collection ({ident}): {collDocuments}")
+
         except _wiredtiger.WiredTigerError:
-            wt.create_table(wt.collection)
+            wt.create_table(ident)
             print(f"Collection {wt.collection} created")
 
-            newNs = f"myDbFromWT.{wt.collection }"
+            newNs = wt.database + "." + wt.collection, 
             newKey = wt.get_new_k(wt.mdbCatalog)
             #new entry in catalogue
 
@@ -140,24 +153,38 @@ def main():
                             'options': {'uuid': Binary(uuid.uuid4().bytes, 4)}
                         }, 
                         'ns': newNs, 
-                        'ident': wt.collection 
+                        'ident': ident
                     }
                 }
             )
             print(f"Catalog updated with the new collection")
+
     #Check if value is set
-        if wt.value is not None:
+        if wt.values:
             print("Insert value")
+
+            for value in wt.values:   
+                newKey = str(wt.get_new_k(ident))
+
+                wt.insert_records(
+                    ident, 
+                    {
+                        newKey: 
+                        {
+                            'test': 'test'
+                        }
+                    }
+                )
+
     #Drop all user collections
     else:
-        print("Mode: drop collection(s)")
+        print("Drop all collections")
 
         catalog = wt.get_k_v(wtCatalogName)
         last_item = list(catalog.keys())[-1]
         #update catalog
         try: 
-            while re.match(r'^(?!collection|index|WiredTiger|_mdb|sizeStorer)\w+$', catalog[last_item]["ident"]) is not None:
-                #add last_item
+            while catalog[last_item]["ident"].startswith(wt.prefix):
                 print(f"Last item (id: {last_item}) to delete: {wt.get_values(wtCatalogName, last_item)}")
                 wt.delete_record(
                     wt.mdbCatalog, 
@@ -168,18 +195,9 @@ def main():
             print("Nothing to update in catalog")
         #Drop wt tables
         for file in os.listdir(wt.dbPath):
-            match = re.match(r'^(?!collection|index|WiredTiger|_mdb|sizeStorer)(\w+)\.wt$', file)
-
-            if match is not None:
-                tableName = match.group(1)
-                wt.drop_table(tableName)
-                print(f"Table: {tableName} is dropped")
-
-        # else:
-        #     maxKey = value
-        #     print(maxKey)
-        #     wt.drop_table()
-        # wt.update_catalog(myNewColl, "drop")
+            if file.startswith(wt.prefix):
+                wt.drop_table(file.replace(".wt", ""))
+                print(f"Table: {file} is dropped")
 
     print("Checkpoint ...")
     wt.checkpoint_session()
