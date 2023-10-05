@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 
 import bson, uuid, sys, re, os
-from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
+from wiredtiger import wiredtiger_version, wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
 from bson.binary import Binary
 
 
 class PyHack(object):
 
     def __init__(self, dbPath):
-        conn = wiredtiger_open(dbPath, 'create,statistics=(all)')
+        conn = wiredtiger_open(dbPath, 'create,statistics=(all),verbose=(version)')
         self.dbPath = dbPath
         self.prefix = "_" + self.__class__.__name__
 
@@ -78,9 +78,6 @@ class PyHack(object):
         else:
             return self.get_k_v(table)
 
-            # if value[1] != '0':
-            #     print(f"Key={key}, Value={value}")
-
     #Ex for records: {"id1":{ "key1":"value1" }, "id2": { "key2":"value2" }, ...}
     def insert_records(self, table, records):
         for key in records.keys():
@@ -106,6 +103,8 @@ class PyHack(object):
 
 
 def main():
+    print(wiredtiger_version()[0])
+
     wt = PyHack("data/db")
     wtCatalogName = wt.get_catalog()
 
@@ -201,72 +200,6 @@ def main():
     wt.checkpoint_session()
 
     wt.close_session()
-
-
-
-
-
-    # Open a cursor and insert a record
-    # cursor = session.get_new_cursor('table:access', None)
-
-    # keys, values = [ (k,v) for k,v in mdbCatalog ]
-
-    # newKey = max(keys) + 1
-
-    # 
-
-    # print(print_cursor(mdbCatalog))
-
-
-
-    # collCursor[1] = bson.encode({'name':'TestUpdate'})
-
-    # collCursor.set_value("")
-
-
-    
-    # print_database_stats(session)
-    # print_file_stats(session)
-    # print_overflow_pages(session)
-    # print_derived_stats(session)
-
-
-def print_database_stats(session):
-    statcursor = session.get_new_cursor("statistics:")
-    print_cursor(statcursor)
-    statcursor.close()
-
-def print_file_stats(session):
-    fstatcursor = session.get_new_cursor("statistics:table:access")
-    print_cursor(fstatcursor)
-    fstatcursor.close()
-
-def print_overflow_pages(session):
-    ostatcursor = session.get_new_cursor("statistics:table:access")
-    val = ostatcursor[stat.dsrc.btree_overflow]
-    if val != 0:
-        print('%s=%s' % (str(val[0]), str(val[1])))
-    ostatcursor.close()
-
-def print_derived_stats(session):
-    dstatcursor = session.get_new_cursor("statistics:table:access")
-    ckpt_size = dstatcursor[stat.dsrc.block_checkpoint_size][1]
-    file_size = dstatcursor[stat.dsrc.block_size][1]
-    percent = 0
-    if file_size != 0:
-        percent = 100 * ((float(file_size) - float(ckpt_size)) / float(file_size))
-    print("Table is %%%s fragmented" % str(percent))
-
-    app_insert = int(dstatcursor[stat.dsrc.cursor_insert_bytes][1])
-    app_remove = int(dstatcursor[stat.dsrc.cursor_remove_bytes][1])
-    app_update = int(dstatcursor[stat.dsrc.cursor_update_bytes][1])
-    fs_writes = int(dstatcursor[stat.dsrc.cache_bytes_write][1])
-
-    if app_insert + app_remove + app_update != 0:
-        print("Write amplification is " + '{:.2f}'.format(fs_writes / (app_insert + app_remove + app_update)))
-    dstatcursor.close()
-
-
 
 if __name__ == "__main__":
     main()
