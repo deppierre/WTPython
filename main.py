@@ -1,19 +1,17 @@
 #!/usr/bin/env python
 
 import bson, uuid, sys, re, os
-from wiredtiger import wiredtiger_version, wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
+from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
 from bson.binary import Binary
 
 
 class PyHack(object):
-
     def __init__(self, dbPath):
-        conn = wiredtiger_open(dbPath, 'create,statistics=(all),verbose=(version)')
+        conn = wiredtiger_open(dbPath, 'create,cache_size=512M,session_max=33000,eviction=(threads_min=4,threads_max=4),config_base=false,statistics=(fast),log=(enabled=true,archive=true,path=journal,compressor=snappy),file_manager=(close_idle_time=100000,close_scan_interval=10,close_handle_minimum=250),statistics_log=(wait=0),verbose=(),compatibility=(release="3.3", require_min="3.2.0")')
         self.dbPath = dbPath
-        self.prefix = "_" + self.__class__.__name__
 
         #MongoDB
-        self.database = self.prefix
+        self.database = "_" + self.__class__.__name__
         self.collection = None
         self.key = None
         self.values = []
@@ -37,6 +35,8 @@ class PyHack(object):
         while cursor.next() == 0:
             k_v[cursor.get_key()] = bson.decode(cursor.get_value())
 
+        cursor.close()
+
         return k_v
     
     def get_new_k(self, table):
@@ -45,6 +45,17 @@ class PyHack(object):
             newKey = int(key) + 1
 
         return newKey
+    
+    def get_ident(self, namespace):
+        catalog = self.get_k_v(self.mdbCatalog)
+
+        for k,v in catalog.items():
+            if 'md' in v:
+                if(v['md']['ns'] == namespace):
+                    return v['ident']
+        else:
+            return None
+
 
     def get_stats(self, table=None):
         if not table:
@@ -62,7 +73,7 @@ class PyHack(object):
         return self.mdbCatalog
     
     def create_table(self, table):
-        self.__session.create(f"table:{table}", "key_format=q,value_format=u, type=file,memory_page_max=10m,split_pct=90,leaf_value_max=64MB,checksum=on,block_compressor=snappy, app_metadata=(formatVersion=1),log=(enabled=false)")
+        self.__session.create(f"table:{table}", "key_format=q,value_format=u,type=file,memory_page_max=10m,split_pct=90,leaf_value_max=64MB,checksum=on,block_compressor=snappy,app_metadata=(formatVersion=1),log=(enabled=false)")
 
     def drop_table(self, table):
         self.__session.drop(f"table:{table}")
@@ -74,22 +85,26 @@ class PyHack(object):
     def get_values(self, table, key=None):
         if key is not None:
             cursor = self.get_new_cursor(table)
-            return bson.decode(cursor[key])
+            result = bson.decode(cursor[key])
+
+            cursor.close()
         else:
-            return self.get_k_v(table)
+            result = self.get_k_v(table)
+
+        return result
+        
 
     #Ex for records: {"id1":{ "key1":"value1" }, "id2": { "key2":"value2" }, ...}
     def insert_records(self, table, records):
         for key in records.keys():
-            print(records[key])
             value = bson.encode(records[key])
 
             cursor = self.get_new_cursor(table)
 
             cursor[key] = value
 
-            print(f"--Record {key} inserted")
             cursor.close()
+            return print(f"-- Record {key} inserted")
 
 
     def delete_record(self, table, key):
@@ -98,67 +113,92 @@ class PyHack(object):
         cursor.set_key(key)
         cursor.remove()
 
-        print(f"--Record {key} deleted")
         cursor.close()
+        return print(f"-- Record {key} deleted")
 
 
 def main():
-    print(wiredtiger_version()[0])
+    print(WIREDTIGER_VERSION_STRING)
 
     wt = PyHack("data/db")
     wtCatalogName = wt.get_catalog()
+    namespace = None
 
     #collect arguments
     try: 
         argvs = sys.argv
-        wt.collection = argvs[1]
+        namespace = argvs[1].split('.')
         for argv in argvs[2:]:
             wt.values.append(argv)
     except IndexError:
-        if not wt.collection :
-            print("No collection set")
+        if not namespace :
+            print("No namespace set")
         elif not wt.values:
             print("No value set")
 
     #Check if collection is set, if not create it
-    if wt.collection is not None:
-        try:
-            ident = wt.prefix + "_" + wt.collection
+    if namespace is not None:
+        if len(namespace) == 1:
+            wt.collection = namespace[0]
+        elif len(namespace) == 2:
+            wt.database = namespace[0]
+            wt.collection = namespace[1]
 
+        namespace = wt.database + "." + wt.collection
+        ident = wt.get_ident(namespace)
+        
+        if ident:
             collDocuments = wt.get_values(ident)
-            print(f"Documents in the collection ({wt.collection}): {collDocuments}")
+            if collDocuments:
+                print(f"Documents in the collection ({wt.collection}): {collDocuments}")
 
-        except _wiredtiger.WiredTigerError:
+            print("Do you wanna drop this collection ? (y/n)")
+            drop = input().lower()
+
+            if drop == "y":
+                catalog = wt.get_k_v(wtCatalogName)
+
+                for k, v in catalog.items():
+                    if 'md' in v:
+                        if v['ident'] == ident:
+                            wt.delete_record(
+                                wt.mdbCatalog, 
+                                k
+                            )
+
+                print(f"Table: {ident} is dropped")
+                wt.drop_table(ident)
+        else:
+            ident = wt.collection
             wt.create_table(ident)
-            print(f"--Collection {wt.collection} created")
-
-            newNs = wt.database + "." + wt.collection 
+            print(f"-- Collection {wt.collection} created")
             newKey = wt.get_new_k(wt.mdbCatalog)
             uuid_binary = Binary(uuid.uuid4().bytes, 4)
+            
             #new entry in catalogue
-
             wt.insert_records(
                 wt.mdbCatalog, 
                 { 
                     newKey:
                     {
                         'md': {
-                            'ns': newNs, 
-                            'options': {'uuid': uuid_binary}}, 
-                            'ns': newNs, 
+                            'ns': namespace, 
+                            'options': {
+                                'uuid': uuid_binary
+                                }
+                            }, 
+                            'ns': namespace, 
                             'ident': ident
                     }
                 }
             )
-            print(f"--Catalog updated with the new collection")
+            print(f"-- Catalog updated with the new collection")
 
-    #Check if value is set
+        #Check if value is set
         if wt.values:
             print("Insert value(s):")
-
             for value in wt.values:   
                 newKey = wt.get_new_k(ident)
-
                 wt.insert_records(
                     ident, 
                     {
@@ -171,30 +211,12 @@ def main():
 
     #Drop all user collections
     else:
-        print("Drop all collections")
-
         catalog = wt.get_k_v(wtCatalogName)
-        last_item = list(catalog.keys())[-1]
+        print("List all collections:")
 
-        #update catalog
-        try: 
-            while catalog[last_item]["md"]["ns"].startswith(wt.prefix):
-                print(f"Last item (id: {last_item}) to delete: {wt.get_values(wtCatalogName, last_item)}")
-                wt.delete_record(
-                    wt.mdbCatalog, 
-                    last_item
-                )
-                last_item -= 1
-        except KeyError:
-            print("Nothing to update in catalog")
-        except TypeError:
-            print(f"Error to remove item {last_item}: {catalog[last_item]}")
-        else:
-            #Drop wt tables
-            for file in os.listdir(wt.dbPath):
-                if file.startswith(wt.prefix):
-                    wt.drop_table(file.replace(".wt", ""))
-                    print(f"Table: {file} is dropped")
+        for k,v in catalog.items():
+            if 'md' in v:
+                print(f"-- namespace: {v['md']['ns']} - ident: {v['ident']}")
 
     print("Checkpoint ...")
     wt.checkpoint_session()
