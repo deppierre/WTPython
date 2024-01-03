@@ -17,7 +17,6 @@ class MyTable(object):
 
         if my_database:
             self.namespace = my_database + "." + my_collection
-        self.key = None
 
         self.__session = conn.open_session()
         print(f"New session created ({self.table})")
@@ -86,7 +85,6 @@ class MyTable(object):
     def get_values(self, key=None):
         """Function to get all values in a Table"""
 
-        print(self.ident)
         if key is not None:
             cursor = self.get_new_cursor()
             result = bson.decode(cursor[key])
@@ -164,6 +162,7 @@ def main():
         if 'md' in v:
             if v['md']['ns'] == coll_table.namespace:
                 coll_table.ident = v['ident']
+                catalog_key = k
 
     if coll_table.ident:
         coll_documents = coll_table.get_values()
@@ -174,17 +173,10 @@ def main():
         drop = input().lower()
 
         if drop == "y":
-            catalog = coll_table.get_k_v()
-
-            for k, v in catalog.items():
-                if 'md' in v:
-                    if v['ident'] == coll_table.ident:
-                        catalog_table.delete_record(
-                            k
-                        )
+            catalog_table.delete_record(catalog_key)
+            coll_table.drop_table()
 
             print(f"Table: {coll_table.ident} is dropped")
-            coll_table.drop_table()
     else:
         coll_table.create_table()
         print(f"-- Collection {collection} created")
