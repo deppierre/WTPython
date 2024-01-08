@@ -7,8 +7,8 @@ from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtige
 from bson.binary import Binary
 
 
-class MyTable(object):
-    def __init__(self, conn, my_collection, my_database = None):
+class WTable(object):
+    def __init__(self, conn, my_collection = None, my_database = None):
 
         #MongoDB
         self.database = "_" + self.__class__.__name__
@@ -19,12 +19,12 @@ class MyTable(object):
             self.namespace = my_database + "." + my_collection
 
         self.__session = conn.open_session()
-        print(f"New session created ({self.table})")
+        print(f"-- New session created ({self.table})")
 
     def checkpoint_session(self):
         """Function to Checkpoint a session"""
         
-        print(f"Checkpoint ({self.table})")
+        print("Checkpoint done")
         return self.__session.checkpoint()
 
     def get_new_cursor(self):
@@ -70,16 +70,16 @@ class MyTable(object):
     
     def create_table(self):
         """Function to create a new table"""
-        self.__session.create(f"table:{self.table}", "key_format=q,value_format=u,type=file,memory_page_max=10m,split_pct=90,leaf_value_max=64MB,checksum=on,block_compressor=snappy,app_metadata=(formatVersion=1),log=(enabled=false)")
+        return self.__session.create(f"table:{self.table}", "key_format=q,value_format=u,type=file,memory_page_max=10m,split_pct=90,leaf_value_max=64MB,checksum=on,block_compressor=snappy,app_metadata=(formatVersion=1),log=(enabled=false)")
 
     def drop_table(self):
         """Function to drop a table"""
-        self.__session.drop(f"table:{self.ident}")
+        return self.__session.drop(f"table:{self.ident}")
 
     def close_session(self):
         """Function to close a WT session"""
 
-        print(f"Session closed ({self.table})")
+        print(f"-- Session closed ({self.table})")
         return self.__session.close()
 
     def get_values(self, key=None):
@@ -107,8 +107,11 @@ class MyTable(object):
             cursor[key] = value
 
             cursor.close()
-            return print(f"-- Record {key} inserted")
 
+            if self.table != "_mdb_catalog":
+                print(f"-- Record {key} inserted")
+                
+        return
 
     def delete_record(self, key):
         """Function to delete one record in a table"""
@@ -118,7 +121,9 @@ class MyTable(object):
         cursor.remove()
 
         cursor.close()
-        return print(f"-- Record {key} deleted")
+        print(f"-- Record {key} deleted")
+
+        return
 
 
 def main():
@@ -154,8 +159,9 @@ def main():
     except IndexError:
         print("No values set")
 
-    coll_table  = MyTable(conn, my_collection = collection, my_database = database)
-    catalog_table  = MyTable(conn, my_collection = "_mdb_catalog")
+    print("\nOpening sessions")
+    coll_table  = WTable(conn, my_collection = collection, my_database = database)
+    catalog_table  = WTable(conn, my_collection = "_mdb_catalog")
 
     catalog_cursor = catalog_table.get_k_v()
     for k,v in catalog_cursor.items():
@@ -165,45 +171,58 @@ def main():
                 catalog_key = k
 
     if coll_table.ident:
+        print(f"\nDocuments in the {collection} collection:")
+
         coll_documents = coll_table.get_values()
         if coll_documents:
-            print(f"Documents in the collection ({collection}): {coll_documents}")
+            for k, v in coll_documents.items():
+                print(f"-- key (RecordID): {k}, value (doc): {v['field']}")
+        else:
+            print(f"-- No Documents in this collection ({collection})")
 
-        print("Do you wanna drop this collection ? (y/n)")
-        drop = input().lower()
 
-        if drop == "y":
-            catalog_table.delete_record(catalog_key)
-            coll_table.drop_table()
+        if not my_values:
+            print("\nDo you want to drop this collection ? (y/n)")
+            drop = input().lower()
 
-            print(f"Table: {coll_table.ident} is dropped")
+            if drop == "y":
+                catalog_table.delete_record(catalog_key)
+                coll_table.drop_table()
+                catalog_table.checkpoint_session()
+
+                print(f"-- Table: {coll_table.ident} is dropped")
     else:
-        coll_table.create_table()
-        print(f"-- Collection {collection} created")
-        new_key = catalog_table.get_new_k()
-        uuid_binary = Binary(uuid.uuid4().bytes, 4)
-        
-        #new entry in catalogue
-        catalog_table.insert_records(
-            {
-                new_key:
+        print("\nDo you want to create this collection ? (y/n)")
+        create = input().lower()
+
+        if create == "y":
+            coll_table.create_table()
+            print(f"-- Collection {collection} created")
+            new_key = catalog_table.get_new_k()
+            uuid_binary = Binary(uuid.uuid4().bytes, 4)
+            
+            #new entry in catalogue
+            catalog_table.insert_records(
                 {
-                    'md': {
-                        'ns': coll_table.namespace, 
-                        'options': {
-                            'uuid': uuid_binary
-                            }
-                        },
-                        'ns': coll_table.namespace, 
-                        'ident': coll_table.table
+                    new_key:
+                    {
+                        'md': {
+                            'ns': coll_table.namespace, 
+                            'options': {
+                                'uuid': uuid_binary
+                                }
+                            },
+                            'ns': coll_table.namespace, 
+                            'ident': coll_table.table
+                    }
                 }
-            }
-        )
-        print("-- Catalog updated with the new collection")
+            )
+            catalog_table.checkpoint_session()
+            print("-- Catalog updated with the new collection")
 
     #Check if value is set
-    if my_values:
-        print("Insert value(s):")
+    if my_values and (coll_table.ident or create == "y"):
+        print("\nInsert value(s):")
         for value in my_values:   
             new_key = coll_table.get_new_k()
             coll_table.insert_records(
@@ -218,15 +237,24 @@ def main():
     #Drop all user collections
     else:
         catalog = catalog_table.get_k_v()
-        print("List all collections:")
+        print("\nList all collections:")
 
         for k,v in catalog.items():
             if 'md' in v:
                 print(f"-- namespace: {v['md']['ns']} - ident: {v['ident']}")
 
-    coll_table.checkpoint_session()
+
+    #Checkpoint
+    if my_values:
+        print("\nDo you want to Checkpoint these modifications ? (y/n)")
+        checkpoint = input().lower()
+
+        if checkpoint == "y":
+            new_checkpoint = WTable(conn)
+            new_checkpoint.checkpoint_session()
 
     #Close all sessions
+    print("\nClosing sessions")
     coll_table.close_session()
     catalog_table.close_session()
 
