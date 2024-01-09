@@ -2,24 +2,22 @@
 # mlaunch init --single --wiredTigerCacheSizeGB 0.5 --host localhost --port 27017
 # mongoimport "mongodb://localhost:27017" -d test -c collection /Users/pdepretz/0_m/tests/people.json
 
-import bson, uuid, sys, re, os
+import bson, uuid, sys, re, os, json
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
 from bson.binary import Binary
 
 
 class WTable(object):
-    def __init__(self, conn, my_collection = None, my_database = None):
+    def __init__(self, conn, coll = None, db = None, ident = None):
 
-        #MongoDB
-        self.database = "_" + self.__class__.__name__
-        self.table = my_collection
-        self.ident = None
+        self.collection = coll
+        self.ident = ident
 
-        if my_database:
-            self.namespace = my_database + "." + my_collection
+        if coll and db:
+            self.namespace = db + "." + coll
 
         self.__session = conn.open_session()
-        print(f"-- New session created ({self.table})")
+        print(f"-- New session created ({self.collection})")
 
     def checkpoint_session(self):
         """Function to Checkpoint a session"""
@@ -30,9 +28,6 @@ class WTable(object):
     def get_new_cursor(self):
         """Function to create a new cursor"""
 
-        if self.ident is None:
-            self.ident = self.table
-            
         return self.__session.open_cursor(f'table:{self.ident}', None, "append")
     
     def get_k_v(self):
@@ -42,7 +37,19 @@ class WTable(object):
         cursor = self.get_new_cursor()
 
         while cursor.next() == 0:
-            k_v[cursor.get_key()] = bson.decode(cursor.get_value())
+            # print(cursor.get_key())
+            # print(cursor.get_value())
+            if self.collection:
+                k_v[cursor.get_key()] = bson.decode(cursor.get_value())
+            else:
+                key = cursor.get_key()
+                value = cursor.get_value()
+
+                k_v[key] = value
+
+                # print(f"key: {key}, value: {value}")
+                # k_v[cursor.get_key()] = cursor.get_value().decode(json.detect_encoding(cursor.get_value()))
+
         cursor.close()
 
         return k_v
@@ -70,7 +77,10 @@ class WTable(object):
     
     def create_table(self):
         """Function to create a new table"""
-        return self.__session.create(f"table:{self.table}", "key_format=q,value_format=u,type=file,memory_page_max=10m,split_pct=90,leaf_value_max=64MB,checksum=on,block_compressor=snappy,app_metadata=(formatVersion=1),log=(enabled=false)")
+
+        if not self.ident:
+            self.ident = self.collection + "_" + str(uuid.uuid4())
+        return self.__session.create(f"table:{self.ident}", "key_format=q,value_format=u,type=file,memory_page_max=10m,split_pct=90,leaf_value_max=64MB,checksum=on,block_compressor=snappy,app_metadata=(formatVersion=1),log=(enabled=false)")
 
     def drop_table(self):
         """Function to drop a table"""
@@ -79,7 +89,7 @@ class WTable(object):
     def close_session(self):
         """Function to close a WT session"""
 
-        print(f"-- Session closed ({self.table})")
+        print(f"-- Session closed ({self.collection})")
         return self.__session.close()
 
     def get_values(self, key=None):
@@ -108,7 +118,7 @@ class WTable(object):
 
             cursor.close()
 
-            if self.table != "_mdb_catalog":
+            if self.ident != "_mdb_catalog":
                 print(f"-- Record {key} inserted")
                 
         return
@@ -137,6 +147,7 @@ def main():
     #Debug connection
     # conn = wiredtiger_open(db_path, 'create, cache_size=512M, session_max=33000, eviction=(threads_min=4,threads_max=4), config_base=false, statistics=(fast), log=(enabled=true,archive=true,path=journal,compressor=snappy), file_manager=(close_idle_time=100000,close_scan_interval=10,close_handle_minimum=250), statistics_log=(wait=0), verbose=(version), compatibility=(release="3.3", require_min="3.2.0")')
     conn = wiredtiger_open(db_path, 'create, cache_size=512M, session_max=33000, eviction=(threads_min=4,threads_max=4)')
+    catalog_table  = WTable(conn, ident = "_mdb_catalog", coll = "_mdb_catalog")
 
     #collect arguments
     try:
@@ -146,11 +157,18 @@ def main():
             database = namespace[0]
             collection = namespace[1]
         else:
-            print("No namespace provided")
+            print("\nNo namespace provided (database.collection)")
             sys.exit(1)
     except IndexError:
-        print("Namespace is incorrect (database.collection)")
+        print("\nNo namespace provided (database.collection)")
         sys.exit(1)
+    finally:
+        catalog = catalog_table.get_k_v()
+        print("\nList all collections:")
+
+        for k,v in catalog.items():
+            if 'md' in v:
+                print(f"-- namespace: {v['md']['ns']} - ident: {v['ident']}")
 
     #collect values
     try:
@@ -160,8 +178,7 @@ def main():
         print("No values set")
 
     print("\nOpening sessions")
-    coll_table  = WTable(conn, my_collection = collection, my_database = database)
-    catalog_table  = WTable(conn, my_collection = "_mdb_catalog")
+    coll_table  = WTable(conn, coll = collection, db = database)
 
     catalog_cursor = catalog_table.get_k_v()
     for k,v in catalog_cursor.items():
@@ -170,16 +187,23 @@ def main():
                 coll_table.ident = v['ident']
                 catalog_key = k
 
+                if 'idxIdent' in v:
+                    for k in v['idxIdent']:
+                        if k == "_id_":
+                            coll_table_idx_ident = v['idxIdent'][k]
+
+                            index_table = WTable(conn, ident = coll_table_idx_ident)
+                            print(index_table.get_k_v())
+
     if coll_table.ident:
         print(f"\nDocuments in the {collection} collection:")
 
         coll_documents = coll_table.get_values()
         if coll_documents:
             for k, v in coll_documents.items():
-                print(f"-- key (RecordID): {k}, value (doc): {v['field']}")
+                print(f"-- key (RecordID): {k}, value (doc): {v}")
         else:
             print(f"-- No Documents in this collection ({collection})")
-
 
         if not my_values:
             print("\nDo you want to drop this collection ? (y/n)")
@@ -213,7 +237,7 @@ def main():
                                 }
                             },
                             'ns': coll_table.namespace, 
-                            'ident': coll_table.table
+                            'ident': coll_table.ident
                     }
                 }
             )
@@ -233,16 +257,6 @@ def main():
                     }
                 }
             )
-
-    #Drop all user collections
-    else:
-        catalog = catalog_table.get_k_v()
-        print("\nList all collections:")
-
-        for k,v in catalog.items():
-            if 'md' in v:
-                print(f"-- namespace: {v['md']['ns']} - ident: {v['ident']}")
-
 
     #Checkpoint
     if my_values:
