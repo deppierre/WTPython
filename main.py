@@ -2,7 +2,7 @@
 # mlaunch init --single --wiredTigerCacheSizeGB 0.5 --host localhost --port 27017
 # mongoimport "mongodb://localhost:27017" -d test -c collection /Users/pdepretz/0_m/tests/people.json
 
-import bson, uuid, sys, re, os, json
+import bson, uuid, sys, subprocess, os
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
 from bson.binary import Binary
 
@@ -37,19 +37,34 @@ class WTable(object):
         cursor = self.get_new_cursor()
 
         while cursor.next() == 0:
-            # print(cursor.get_key())
-            # print(cursor.get_value())
             if self.collection:
                 k_v[cursor.get_key()] = bson.decode(cursor.get_value())
             else:
-                key = cursor.get_key()
-                value = cursor.get_value()
+                key = cursor.get_key().hex()
+                value = cursor.get_value().hex()
+
+                key += value[:4]
+                value = value[-2:]
+
+                ksdecode = subprocess.run(
+                    [
+                        os.path.join(os.path.dirname(__file__) or '.',"ksdecode"),
+                        "-o",
+                        "bson",
+                        "-p",
+                        "{_id: 1}",
+                        "-t",
+                        value,
+                        "-r",
+                        "long",
+                        key,
+                    ],
+                    capture_output=True,
+                )    
+                print(ksdecode.stdout.decode("utf-8").strip())   
 
                 k_v[key] = value
-
-                # print(f"key: {key}, value: {value}")
-                # k_v[cursor.get_key()] = cursor.get_value().decode(json.detect_encoding(cursor.get_value()))
-
+                
         cursor.close()
 
         return k_v
@@ -192,6 +207,7 @@ def main():
                         if k == "_id_":
                             coll_table_idx_ident = v['idxIdent'][k]
 
+                            print(f"\nIndexes in the {collection} collection:")
                             index_table = WTable(conn, ident = coll_table_idx_ident)
                             print(index_table.get_k_v())
 
