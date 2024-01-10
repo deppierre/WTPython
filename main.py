@@ -12,6 +12,7 @@ class WTable(object):
 
         self.collection = coll
         self.ident = ident
+        self.indexes = []
 
         if coll and db:
             self.namespace = db + "." + coll
@@ -122,19 +123,17 @@ class WTable(object):
     #Ex for records: {"id1":{ "key1":"value1" }, "id2": { "key2":"value2" }, ...}
     def insert_records(self, records):
         """Function to insert a list of records in a Table"""
+
+        cursor = self.get_new_cursor()
+
         for key in records.keys():
             value = bson.encode(records[key])
-
-            cursor = self.get_new_cursor()
-
             cursor[key] = value
 
-            cursor.close()
+        cursor.close()
 
-            if self.ident != "_mdb_catalog":
-                print(f"-- Record {key} inserted")
+        return len(records)
                 
-        return
 
     def delete_record(self, key):
         """Function to delete one record in a table"""
@@ -143,11 +142,7 @@ class WTable(object):
         cursor.set_key(key)
         cursor.remove()
 
-        cursor.close()
-        print(f"-- Record {key} deleted")
-
-        return
-
+        return cursor.close()
 
 def main():
     """Run function"""
@@ -156,6 +151,7 @@ def main():
     argvs = sys.argv
     db_path = "data/db"
     my_values = []
+    create = None
 
     #Debug connection
     # conn = wiredtiger_open(db_path, 'create, cache_size=512M, session_max=33000, eviction=(threads_min=4,threads_max=4), config_base=false, statistics=(fast), log=(enabled=true,archive=true,path=journal,compressor=snappy), file_manager=(close_idle_time=100000,close_scan_interval=10,close_handle_minimum=250), statistics_log=(wait=0), verbose=(version), compatibility=(release="3.3", require_min="3.2.0")')
@@ -194,22 +190,20 @@ def main():
 
     catalog_cursor = catalog_table.get_k_v()
     for k,v in catalog_cursor.items():
-        if 'md' in v:
-            if v['md']['ns'] == coll_table.namespace:
-                coll_table.ident = v['ident']
-                indexes_ = v["md"]["indexes"]
-                indexes = []
+        if "md" in v:
+            if v["md"]["ns"] == coll_table.namespace:
+                coll_table.ident = v["ident"]
+
+                if "indexes" in v["md"]:
+                    for index in v["md"]["indexes"]:
+                        name = index["spec"]["name"]
+                        coll_table.indexes.append({
+                            "key": index["spec"]["key"],
+                            "name": name,
+                            "ident": v["idxIdent"][name]
+                        })
 
                 catalog_key = k
-
-                #specs
-                for index in indexes_:
-                    name = index["spec"]["name"]
-                    indexes.append({
-                        "key": index["spec"]["key"],
-                        "name": name,
-                        "ident": v["idxIdent"][name]
-                    })
 
     if coll_table.ident:
         print(f"\nident: {coll_table.ident}\n-- key: RecordID, value: document")
@@ -219,26 +213,7 @@ def main():
             for k, v in coll_documents.items():
                 print(f"-- key: {k}, value: {v}")
         else:
-            print(f"-- No Documents in this collection ({collection})")
-
-    if indexes:
-        for index in indexes:
-            print(f"\nident: {index['ident']}\n-- key: KeyString, value: RecordID")
-            index_table = WTable(conn, ident = index["ident"])
-
-            for k, v in index_table.get_k_v(idx_key = str(index["key"])).items():
-                print(f"-- key: {k[1:].strip()}, value: {v.split(':')[1][:-1].strip()}")
-
-        if not my_values:
-            print("\nDo you want to drop this collection ? (y/n)")
-            drop = input().lower()
-
-            if drop == "y":
-                catalog_table.delete_record(catalog_key)
-                coll_table.drop_table()
-                catalog_table.checkpoint_session()
-
-                print(f"-- Table: {coll_table.ident} is dropped")
+            print("-- 0 Documents")
     else:
         print("\nDo you want to create this collection ? (y/n)")
         create = input().lower()
@@ -268,12 +243,38 @@ def main():
             catalog_table.checkpoint_session()
             print("-- Catalog updated with the new collection")
 
+    if coll_table.indexes:
+        for index in coll_table.indexes:
+            print(f"\nident: {index['ident']}\n-- key: KeyString, value: RecordID")
+            index_table = WTable(conn, ident = index["ident"])
+
+            for k, v in index_table.get_k_v(idx_key = str(index["key"])).items():
+                print(f"-- key: {{ {k[1:].strip()} }}, value: {v.split(':')[1][:-1].strip()}")
+
+    if not my_values and not create:
+        print("\nDo you want to drop this collection ? (y/n)")
+        drop = input().lower()
+
+        if drop == "y":
+            catalog_table.delete_record(catalog_key)
+            coll_table.drop_table()
+            catalog_table.checkpoint_session()
+
+            if coll_table.indexes:
+                for index in coll_table.indexes:
+                    index_table = WTable(conn, ident = index["ident"])
+                    index_table.drop_table()
+                    print(f"-- Table: {index_table.ident} is dropped")
+
+
+            print(f"-- Table: {coll_table.ident} is dropped")
+
     #Check if value is set
     if my_values and (coll_table.ident or create == "y"):
-        print("\nInsert value(s):")
-        for value in my_values:   
+        nb_insert = 0
+        for value in my_values:
             new_key = coll_table.get_new_k()
-            coll_table.insert_records(
+            nb_insert += coll_table.insert_records(
                 {
                     new_key:
                     {
@@ -281,6 +282,7 @@ def main():
                     }
                 }
             )
+        print(f"\nInsert value(s): {nb_insert}")
 
     #Checkpoint
     if my_values:
