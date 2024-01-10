@@ -18,9 +18,6 @@ class WTable(object):
 
         self.__session = conn.open_session()
 
-        session_obj = self.ident if self.ident else self.collection
-        # print(f"-- New session created ({session_obj})")
-
     def checkpoint_session(self):
         """Function to Checkpoint a session"""
         
@@ -32,7 +29,7 @@ class WTable(object):
 
         return self.__session.open_cursor(f'table:{self.ident}', None, "append")
     
-    def get_k_v(self, idxKey = None):
+    def get_k_v(self, idx_key = None):
         """Function to return keys and values in a table"""
 
         k_v = {}
@@ -46,7 +43,7 @@ class WTable(object):
                 value = cursor.get_value().hex()
 
 
-                if(idxKey == "{'_id': 1}"):
+                if(idx_key == "{'_id': 1}"):
                     key += value[:4]
                     value = value[-2:]
 
@@ -56,7 +53,7 @@ class WTable(object):
                         "-o",
                         "bson",
                         "-p",
-                        idxKey,
+                        idx_key,
                         "-t",
                         value,
                         "-r",
@@ -64,12 +61,10 @@ class WTable(object):
                         key,
                     ],
                     capture_output=True, check=True
-                )    
-                result = ksdecode.stdout.decode("utf-8").strip()
+                )
+                keystring, record_id = ksdecode.stdout.decode("utf-8").strip().split(",")
 
-                KeyString, RecordID = result.split(',')
-
-                k_v[KeyString] = RecordID
+                k_v[keystring] = record_id
 
         cursor.close()
 
@@ -83,18 +78,15 @@ class WTable(object):
 
         return new_key
 
-    # def get_stats(self):
-    #     """Function to get stats of a table"""
-    #     if not table:
-    #         cursor = self.__session.open_cursor("statistics:", None)
-    #     else:
-    #         cursor = self.__session.open_cursor(f"statistics:table:{table}", None)
+    def get_stats(self):
+        """Function to get stats of a table"""
+        cursor = self.__session.open_cursor(f"statistics:table:{table}", None)
 
-    #     stats = []
-    #     while cursor.next() == 0:
-    #         stats.append(cursor.get_value())
+        stats = []
+        while cursor.next() == 0:
+            stats.append(cursor.get_value())
         
-    #     return stats
+        return stats
     
     def create_table(self):
         """Function to create a new table"""
@@ -185,7 +177,7 @@ def main():
         sys.exit(1)
     finally:
         catalog = catalog_table.get_k_v()
-        print("\nList all collections:")
+        print("\nList of collections:")
 
         for k,v in catalog.items():
             if 'md' in v:
@@ -218,13 +210,9 @@ def main():
                         "name": name,
                         "ident": v["idxIdent"][name]
                     })
-                    # for name, ident in v["idxIdent"].items():
-                    #     if k["spec"]["name"] == name:
-                    #         indexes[ident] = k["spec"]["key"]
-                    #         ###need name
 
     if coll_table.ident:
-        print(f"\nDocuments in the {collection} collection  ({coll_table.ident}):\n-- key: RecordID , value: document")
+        print(f"\nident: {coll_table.ident}\n-- key: RecordID, value: document")
 
         coll_documents = coll_table.get_values()
         if coll_documents:
@@ -235,11 +223,11 @@ def main():
 
     if indexes:
         for index in indexes:
-            print("\nIndex keys " + index["name"] + " for " + coll_table.collection + " collection " + index["ident"] +"\n-- key: KeyString , value: RecordID")
+            print(f"\nident: {index['ident']}\n-- key: KeyString, value: RecordID")
             index_table = WTable(conn, ident = index["ident"])
 
-            for k, v in index_table.get_k_v(idxKey = str(index["key"])).items():
-                print("-- key: {" + k.strip("{}") + " } , value: " + v.strip("{}"))
+            for k, v in index_table.get_k_v(idx_key = str(index["key"])).items():
+                print(f"-- key: {k[1:].strip()}, value: {v.split(':')[1][:-1].strip()}")
 
         if not my_values:
             print("\nDo you want to drop this collection ? (y/n)")
