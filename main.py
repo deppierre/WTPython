@@ -17,7 +17,9 @@ class WTable(object):
             self.namespace = db + "." + coll
 
         self.__session = conn.open_session()
-        print(f"-- New session created ({self.collection})")
+
+        session_obj = self.ident if self.ident else self.collection
+        print(f"-- New session created ({session_obj})")
 
     def checkpoint_session(self):
         """Function to Checkpoint a session"""
@@ -59,11 +61,13 @@ class WTable(object):
                         "long",
                         key,
                     ],
-                    capture_output=True,
+                    capture_output=True, check=True
                 )    
-                print(ksdecode.stdout.decode("utf-8").strip())   
+                result = ksdecode.stdout.decode("utf-8").strip()
 
-                k_v[key] = value
+                KeyString, RecordID = result.split(',')
+
+                k_v[KeyString] = RecordID
                 
         cursor.close()
 
@@ -201,18 +205,28 @@ def main():
             if v['md']['ns'] == coll_table.namespace:
                 coll_table.ident = v['ident']
                 catalog_key = k
+                indexes = {}
+
+                for k in v["md"]["indexes"]:
+
+                    for name, ident in v["idxIdent"].items():
+                        if k["spec"]["name"] == name:
+                            indexes[ident] = k["spec"]["key"]
+                            ###need name
 
                 if 'idxIdent' in v:
                     for k in v['idxIdent']:
                         if k == "_id_":
                             coll_table_idx_ident = v['idxIdent'][k]
 
-                            print(f"\nIndexes in the {collection} collection:")
                             index_table = WTable(conn, ident = coll_table_idx_ident)
-                            print(index_table.get_k_v())
+                            print(f"\nIndex keys {k} for {coll_table.collection} collection ({index_table.ident}):")
+                            
+                            for k, v in index_table.get_k_v().items():
+                                print(f"-- key (KeyString): {k}, value (RecordID): {v}")
 
     if coll_table.ident:
-        print(f"\nDocuments in the {collection} collection:")
+        print(f"\nDocuments in the {collection} collection  ({coll_table.ident}):")
 
         coll_documents = coll_table.get_values()
         if coll_documents:
