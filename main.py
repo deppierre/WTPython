@@ -19,7 +19,7 @@ class WTable(object):
         self.__session = conn.open_session()
 
         session_obj = self.ident if self.ident else self.collection
-        print(f"-- New session created ({session_obj})")
+        # print(f"-- New session created ({session_obj})")
 
     def checkpoint_session(self):
         """Function to Checkpoint a session"""
@@ -32,7 +32,7 @@ class WTable(object):
 
         return self.__session.open_cursor(f'table:{self.ident}', None, "append")
     
-    def get_k_v(self):
+    def get_k_v(self, idxKey = None):
         """Function to return keys and values in a table"""
 
         k_v = {}
@@ -45,8 +45,10 @@ class WTable(object):
                 key = cursor.get_key().hex()
                 value = cursor.get_value().hex()
 
-                key += value[:4]
-                value = value[-2:]
+
+                if(idxKey == "{'_id': 1}"):
+                    key += value[:4]
+                    value = value[-2:]
 
                 ksdecode = subprocess.run(
                     [
@@ -54,7 +56,7 @@ class WTable(object):
                         "-o",
                         "bson",
                         "-p",
-                        "{_id: 1}",
+                        idxKey,
                         "-t",
                         value,
                         "-r",
@@ -68,7 +70,7 @@ class WTable(object):
                 KeyString, RecordID = result.split(',')
 
                 k_v[KeyString] = RecordID
-                
+
         cursor.close()
 
         return k_v
@@ -196,7 +198,6 @@ def main():
     except IndexError:
         print("No values set")
 
-    print("\nOpening sessions")
     coll_table  = WTable(conn, coll = collection, db = database)
 
     catalog_cursor = catalog_table.get_k_v()
@@ -204,36 +205,41 @@ def main():
         if 'md' in v:
             if v['md']['ns'] == coll_table.namespace:
                 coll_table.ident = v['ident']
+                indexes_ = v["md"]["indexes"]
+                indexes = []
+
                 catalog_key = k
-                indexes = {}
 
-                for k in v["md"]["indexes"]:
-
-                    for name, ident in v["idxIdent"].items():
-                        if k["spec"]["name"] == name:
-                            indexes[ident] = k["spec"]["key"]
-                            ###need name
-
-                if 'idxIdent' in v:
-                    for k in v['idxIdent']:
-                        if k == "_id_":
-                            coll_table_idx_ident = v['idxIdent'][k]
-
-                            index_table = WTable(conn, ident = coll_table_idx_ident)
-                            print(f"\nIndex keys {k} for {coll_table.collection} collection ({index_table.ident}):")
-                            
-                            for k, v in index_table.get_k_v().items():
-                                print(f"-- key (KeyString): {k}, value (RecordID): {v}")
+                #specs
+                for index in indexes_:
+                    name = index["spec"]["name"]
+                    indexes.append({
+                        "key": index["spec"]["key"],
+                        "name": name,
+                        "ident": v["idxIdent"][name]
+                    })
+                    # for name, ident in v["idxIdent"].items():
+                    #     if k["spec"]["name"] == name:
+                    #         indexes[ident] = k["spec"]["key"]
+                    #         ###need name
 
     if coll_table.ident:
-        print(f"\nDocuments in the {collection} collection  ({coll_table.ident}):")
+        print(f"\nDocuments in the {collection} collection  ({coll_table.ident}):\n-- key: RecordID , value: document")
 
         coll_documents = coll_table.get_values()
         if coll_documents:
             for k, v in coll_documents.items():
-                print(f"-- key (RecordID): {k}, value (doc): {v}")
+                print(f"-- key: {k}, value: {v}")
         else:
             print(f"-- No Documents in this collection ({collection})")
+
+    if indexes:
+        for index in indexes:
+            print("\nIndex keys " + index["name"] + " for " + coll_table.collection + " collection " + index["ident"] +"\n-- key: KeyString , value: RecordID")
+            index_table = WTable(conn, ident = index["ident"])
+
+            for k, v in index_table.get_k_v(idxKey = str(index["key"])).items():
+                print("-- key: {" + k.strip("{}") + " } , value: " + v.strip("{}"))
 
         if not my_values:
             print("\nDo you want to drop this collection ? (y/n)")
