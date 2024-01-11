@@ -25,10 +25,13 @@ class WTable(object):
         print("Checkpoint done")
         return self.__session.checkpoint()
 
-    def get_new_cursor(self):
+    def get_new_cursor(self, statistics=False):
         """Function to create a new cursor"""
 
-        return self.__session.open_cursor(f'table:{self.ident}', None, "append")
+        if statistics:
+            return self.__session.open_cursor(f"statistics:table:{self.ident}", None, "append")
+
+        return self.__session.open_cursor(f"table:{self.ident}", None, "append")
     
     def get_k_v(self, idx_key = None):
         """Function to return keys and values in a table"""
@@ -81,20 +84,29 @@ class WTable(object):
 
     def get_stats(self):
         """Function to get stats of a table"""
-        cursor = self.__session.open_cursor(f"statistics:table:{table}", None)
+        cursor = self.get_new_cursor(statistics=True)
 
-        stats = []
+        stat_output = []
+        stat_filter = [
+            "cache: modified pages evicted",
+            "cache: pages evicted",
+            "cache: pages read into cache",
+            "cache: pages written from cache"
+        ]
+
         while cursor.next() == 0:
-            stats.append(cursor.get_value())
-        
-        return stats
+            stat_ = cursor.get_value()
+            if stat_[0] in stat_filter:
+                stat_output.append(stat_)
+
+        return stat_output
     
     def create_table(self):
         """Function to create a new table"""
 
         if not self.ident:
             self.ident = self.collection + "_" + str(uuid.uuid4())
-        return self.__session.create(f"table:{self.ident}", "key_format=q,value_format=u,type=file,memory_page_max=10m,split_pct=90,leaf_value_max=64MB,checksum=on,block_compressor=snappy,app_metadata=(formatVersion=1),log=(enabled=false)")
+        return self.__session.create(f"table:{self.ident}", "key_format=q,value_format=u,type=file,memory_page_max=4096B,split_pct=50,leaf_page_max=4096B,checksum=on,block_compressor=snappy,app_metadata=(formatVersion=1)")
 
     def drop_table(self):
         """Function to drop a table"""
@@ -152,10 +164,11 @@ def main():
     db_path = "data/db"
     my_values = []
     create = None
+    drop = None
 
     #Debug connection
     # conn = wiredtiger_open(db_path, 'create, cache_size=512M, session_max=33000, eviction=(threads_min=4,threads_max=4), config_base=false, statistics=(fast), log=(enabled=true,archive=true,path=journal,compressor=snappy), file_manager=(close_idle_time=100000,close_scan_interval=10,close_handle_minimum=250), statistics_log=(wait=0), verbose=(version), compatibility=(release="3.3", require_min="3.2.0")')
-    conn = wiredtiger_open(db_path, 'create, cache_size=512M, session_max=33000, eviction=(threads_min=4,threads_max=4)')
+    conn = wiredtiger_open(db_path, "create, cache_size=512M, session_max=33000, log=(enabled,recover=on), eviction=(threads_min=4,threads_max=4), verbose=(), statistics=(all)")
     catalog_table  = WTable(conn, ident = "_mdb_catalog", coll = "_mdb_catalog")
 
     #collect arguments
@@ -282,7 +295,7 @@ def main():
                     }
                 }
             )
-        print(f"\nInsert value(s): {nb_insert}")
+        print(f"\nInsert new value(s): {nb_insert}")
 
     #Checkpoint
     if my_values:
@@ -292,6 +305,12 @@ def main():
         if checkpoint == "y":
             new_checkpoint = WTable(conn)
             new_checkpoint.checkpoint_session()
+
+    if not drop and not create:
+        print(f"\nStatistics for {coll_table.ident}:")
+
+        for collstat in coll_table.get_stats():
+            print(f"-- {collstat[0]} :: {collstat[1]}")
 
     #Close all sessions
     print("\nClosing sessions")
