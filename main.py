@@ -7,18 +7,15 @@ from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtige
 from bson.binary import Binary
 
 class WTable(object):
-    def __init__(self, conn, coll = None, db = None, ident = None):
+    def __init__(self, conn, name = None, ident = None, type = None):
 
-        self.collection = coll
+        self.name = name
         self.ident = ident
-        self.indexes = []
-
-        if coll and db:
-            self.namespace = db + "." + coll
+        self.type = type
 
         self.__session = conn.open_session()
 
-        print(f"\nNew Session ({self.collection})")
+        print(f"\nNew Session ({name})")
 
     def checkpoint_session(self):
         """Function to Checkpoint a session"""
@@ -41,7 +38,7 @@ class WTable(object):
         cursor = self.get_new_cursor()
 
         while cursor.next() == 0:
-            if self.collection:
+            if self.type == "c":
                 k_v[cursor.get_key()] = bson.decode(cursor.get_value())
             else:
                 key = cursor.get_key().hex()
@@ -106,18 +103,21 @@ class WTable(object):
         """Function to create a new table"""
 
         if not self.ident:
-            self.ident = self.collection + "_" + str(uuid.uuid4())
+            self.ident = self.name + "_" + str(uuid.uuid4())
         return self.__session.create(f"table:{self.ident}", "key_format=q,value_format=u,type=file,memory_page_max=4096B,split_pct=50,leaf_page_max=4096B,checksum=on,block_compressor=snappy")
 
     def drop_table(self):
         """Function to drop a table"""
+
+        print(f"\nTable dropped ({self.name})")
+
         return self.__session.drop(f"table:{self.ident}")
 
     def close_session(self):
         """Function to close a WT session"""
 
         if(self.ident):
-            print(f"\nSession closed ({self.collection})")
+            print(f"\nSession closed ({self.name})")
             return self.__session.close()
 
     def get_values(self, key=None):
@@ -165,8 +165,11 @@ def main():
     argvs = sys.argv
     db_path = "data/db"
     my_values = []
+    coll_indexes = []
     drop = None
     coll_table = None
+    ident = None
+    database, collection = "", ""
 
 
     #Debug connection
@@ -177,20 +180,13 @@ def main():
     except _wiredtiger.WiredTigerError as e:
         print(f"Connection error ({e})")
     else:
-        catalog_table  = WTable(conn, ident = "_mdb_catalog", coll = "_mdb_catalog")
+        catalog_table  = WTable(conn, ident = "_mdb_catalog", name = "_mdb_catalog", type = "c")
 
         #collect arguments
         try:
-            if argvs[1]:
-                namespace = argvs[1].split('.')
-
-                database = namespace[0]
-                collection = namespace[1]
-
-                coll_table  = WTable(conn, coll = collection, db = database)
-            else:
-                print("\nNo namespace provided (database.collection)")
-                sys.exit(1)
+            namespace = argvs[1].split('.')
+            database = namespace[0]
+            collection = namespace[1]
         except IndexError:
             print("\nNo namespace provided (database.collection)")
             sys.exit(1)
@@ -203,13 +199,13 @@ def main():
                 if 'md' in v:
                     print(f"-- namespace: {v['md']['ns']} - ident: {v['ident']}")
 
-                    if coll_table and v["md"]["ns"] == coll_table.namespace:
-                            coll_table.ident = v["ident"]
+                    if v["md"]["ns"] == database + "." + collection:
+                            ident = v["ident"]
 
                             if "indexes" in v["md"]:
                                 for index in v["md"]["indexes"]:
                                     name = index["spec"]["name"]
-                                    coll_table.indexes.append({
+                                    coll_indexes.append({
                                         "key": index["spec"]["key"],
                                         "name": name,
                                         "ident": v["idxIdent"][name]
@@ -219,7 +215,6 @@ def main():
 
             catalog_table.close_session()
 
-
         #collect values
         try:
             for argv in argvs[2:]:
@@ -227,7 +222,9 @@ def main():
         except IndexError:
             print("No values set")
 
-        if coll_table.ident:
+        if ident:
+            coll_table  = WTable(conn, name = collection, ident = ident, type = "c")
+
             print(f"\nident: {coll_table.ident}\n-- key: RecordID || value: document")
 
             coll_documents = coll_table.get_values()
@@ -236,35 +233,43 @@ def main():
                     print(f"-- key: {k} || value: {v}")
             else:
                 print("-- 0 Documents")
+
+            coll_table.close_session()
+            
+            if coll_indexes:
+                for index in coll_indexes:
+                    index_table = WTable(conn, name = index['name'], ident = index["ident"], type = "i")
+                    print(f"\nident: {index['ident']}\n-- key: KeyString || value: RecordID")
+
+                    for k, v in index_table.get_k_v(idx_key = str(index["key"])).items():
+                        print(f"-- key: {{ {k[1:].strip()} }} || value: {v.split(':')[1][:-1].strip()}")
+
+                    index_table.close_session()
+
         else:
-            print(f"\nNo collection found ({coll_table.collection})")
+            print(f"\nNo collection found ({collection})")
 
-        if coll_table.indexes:
-            for index in coll_table.indexes:
-                print(f"\nident: {index['ident']}\n-- key: KeyString || value: RecordID")
-                index_table = WTable(conn, ident = index["ident"])
-
-                for k, v in index_table.get_k_v(idx_key = str(index["key"])).items():
-                    print(f"-- key: {{ {k[1:].strip()} }} || value: {v.split(':')[1][:-1].strip()}")
-
-        if coll_table.ident:
+        if ident:
             print("\nDo you want to drop this collection ? (y/n)")
             drop = input().lower()
 
             if drop == "y":
-                catalog_table  = WTable(conn, ident = "_mdb_catalog", coll = "_mdb_catalog")
+                catalog_table  = WTable(conn, ident = "_mdb_catalog", name = "_mdb_catalog", type = "c")
+                coll_table  = WTable(conn, name = collection, ident = ident, type = "c")
+
                 catalog_table.delete_record(catalog_key)
                 coll_table.drop_table()
+
+                if coll_indexes:
+                    for index in coll_indexes:
+                        index_table = WTable(conn, name = index['name'], ident = index["ident"], type = "i")
+                        index_table.drop_table()
+                        index_table.close_session()
+
                 catalog_table.checkpoint_session()
 
-                if coll_table.indexes:
-                    for index in coll_table.indexes:
-                        index_table = WTable(conn, ident = index["ident"])
-                        index_table.drop_table()
-                        print(f"-- Table: {index_table.ident} is dropped")
-
-
-                print(f"-- Table: {coll_table.ident} is dropped")
+                catalog_table.close_session()
+                
 
         #Check if value is set
         if my_values:
@@ -290,13 +295,11 @@ def main():
                 new_checkpoint = WTable(conn)
                 new_checkpoint.checkpoint_session()
 
-        if coll_table.ident and drop is None:
+        if ident and drop is None:
             print(f"\nStatistics for {coll_table.ident}:")
 
             for collstat in coll_table.get_stats():
                 print(f"-- {collstat[0]} :: {collstat[1]}")
-
-        coll_table.close_session()
 
 if __name__ == "__main__":
     main()
