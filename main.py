@@ -2,9 +2,10 @@
 # mlaunch init --single --wiredTigerCacheSizeGB 0.5 --host localhost --port 27017
 # mongoimport "mongodb://localhost:27017" -d test -c collection /Users/pdepretz/0_m/tests/people.json
 
-import bson, uuid, sys, subprocess, os
+import bson, sys, subprocess, os, pprint
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
 from bson.binary import Binary
+import re
 
 class WTable(object):
     def __init__(self, conn, ident = None, type = None):
@@ -23,15 +24,19 @@ class WTable(object):
         print("Checkpoint done")
         return self.__session.checkpoint()
 
-    def get_new_cursor(self, statistics=False):
+    def get_new_cursor(self, statistics=False, log=False):
         """Function to create a new cursor"""
 
         if statistics:
             return self.__session.open_cursor(f"statistics:table:{self.ident}", None, "append")
+        
+        elif log:
+            return self.__session.open_cursor("log:")
 
-        return self.__session.open_cursor(f"table:{self.ident}", None, "append")
+        else:
+            return self.__session.open_cursor(f"table:{self.ident}", None, "append")
     
-    def get_k_v(self, idx_key = None):
+    def get_ks_vs(self, idx_key = None):
         """Function to return keys and values in a table"""
 
         k_v = {}
@@ -70,14 +75,6 @@ class WTable(object):
         cursor.close()
 
         return k_v
-    
-    def get_new_k(self):
-        """Function to generate a new key in a table"""
-        new_key = 0
-        for key in self.get_k_v():
-            new_key = int(key) + 1
-
-        return new_key
 
     def get_stats(self):
         """Function to get stats of a table"""
@@ -112,19 +109,6 @@ class WTable(object):
             print(f"Session closed ({self.ident})")
             return self.__session.close()
 
-    def get_values(self, key=None):
-        """Function to get all values in a Table"""
-
-        if key is not None:
-            cursor = self.get_new_cursor()
-            result = bson.decode(cursor[key])
-
-            cursor.close()
-        else:
-            result = self.get_k_v()
-
-        return result
-        
 
     #Ex for records: {"id1":{ "key1":"value1" }, "id2": { "key2":"value2" }, ...}
     def insert_records(self, records):
@@ -168,7 +152,7 @@ def main():
     # conn = wiredtiger_open(db_path, 'create, cache_size=512M, session_max=33000, eviction=(threads_min=4,threads_max=4), config_base=false, statistics=(fast), log=(enabled=true,archive=true,path=journal,compressor=snappy), file_manager=(close_idle_time=100000,close_scan_interval=10,close_handle_minimum=250), statistics_log=(wait=0), verbose=(version), compatibility=(release="3.3", require_min="3.2.0")')
     
     try:
-        conn = wiredtiger_open(db_path, "create, cache_size=512M, session_max=33000, log=(enabled,recover=on), eviction=(threads_min=4,threads_max=4), verbose=(), statistics=(all)")
+        conn = wiredtiger_open(db_path, "log=(enabled=true,path=journal,compressor=snappy),readonly=true,builtin_extension_config=(zstd=(compression_level=6))")
     except _wiredtiger.WiredTigerError as e:
         print(f"Connection error ({e})")
     else:
@@ -183,7 +167,7 @@ def main():
             print("\nNo namespace provided (database.collection)")
             sys.exit(1)
         finally:
-            catalog = catalog_table.get_k_v()
+            catalog = catalog_table.get_ks_vs()
             print("\nMongoDB catalog content (_mdb_catalog):")
 
             for k,v in catalog.items():
@@ -212,58 +196,47 @@ def main():
 
         if ident:
             coll_table  = WTable(conn, ident = ident, type = "c")
+            coll_documents = coll_table.get_ks_vs()
 
-            coll_stats = coll_table.get_stats()
-            coll_documents = coll_table.get_values()
             if coll_documents:
                 for k, v in coll_documents.items():
                     print(f"- RecordID: {k}, document(bson): {v}")
             else:
                 print("-- 0 Documents")
+            cursor = coll_table.get_new_cursor(log=True)
+            
+            print("\nJournal content:")
+            while cursor.next() == 0:
+                log_file, log_offset, opcount = cursor.get_key()
+                txnid, rectype, optype, fileid, logrec_key, logrec_value = cursor.get_value()
 
+                if rectype == 1:  # Assuming WT_LOGREC_MESSAGE corresponds to 1
+                    print(f"LSN [{log_file}][{log_offset}].{opcount}: record type {rectype} optype {optype} txnid {txnid} fileid {fileid}")
+                    print(f"key size {len(logrec_key)} value size {len(logrec_value)}")
+                    
+                    try:
+                        bson_obj = bson.decode_all(logrec_value)
+                        bson_obj = pprint.pformat(bson_obj, indent=1).replace('\n', '\n\t  ')
+                        print('\t\"value-bson\":%s' % (bson_obj),)
+                    except Exception as e:
+                        # If bsons don't appear to be printing uncomment this line for the error reason.
+                        #logging.error('Error at %s', 'division', exc_info=e)
+                        print(logrec_value)
+                        pass
+            cursor.close()
             coll_table.close_session()
             
             if coll_indexes:
                 for index in coll_indexes:
                     index_table = WTable(conn, ident = index["ident"], type = "i")
 
-                    for k, v in index_table.get_k_v(idx_key = str(index["key"])).items():
+                    for k, v in index_table.get_ks_vs(idx_key = str(index["key"])).items():
                         print(f"-- KeyString: {{ {k[1:].strip()} }}, RecordID: {v.split(':')[1][:-1].strip()}")
 
                     index_table.close_session()
 
         else:
             print(f"\nNo collection found ({collection})")
-
-        #Check if value is set
-        if my_values:
-            nb_insert = 0
-            for value in my_values:
-                new_key = coll_table.get_new_k()
-                nb_insert += coll_table.insert_records(
-                    {
-                        new_key:
-                        {
-                            'field': value
-                        }
-                    }
-                )
-            print(f"\nInsert new value(s): {nb_insert}")
-
-        #Checkpoint
-        if my_values:
-            print("\nDo you want to Checkpoint these modifications ? (y/n)")
-            checkpoint = input().lower()
-
-            if checkpoint == "y":
-                new_checkpoint = WTable(conn)
-                new_checkpoint.checkpoint_session()
-
-        if ident and drop is None:
-            print(f"\nStatistics for {ident}:")
-
-            for collstat in coll_stats:
-                print(f"-- {collstat[0]} :: {collstat[1]}")
 
 if __name__ == "__main__":
     main()
