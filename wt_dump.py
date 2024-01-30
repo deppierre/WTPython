@@ -7,6 +7,11 @@
 # Import data:
 #   mongoimport "mongodb://localhost:27017" -d test -c collection /Users/pdepretz/0_m/tests/people.json
 
+# Demo:
+# 1- catalog is the central piece: WT only knows an object called ident, a table. So first MDB has to go through the catalog to identify the table supporting your index and collection. The catalog is updated everytime you create a new collection or index. MDB choose the ident name by itself, so WT will just create it using the name provided by MDB.
+# 2- dump ns. thats how we can map our indexes with collection. MDB will test the indexes in the catalog to select the best plan
+# 3- you can pass a bunch of options to WT, and some of them can be applied at the table level like compression, page size etc ... notice different between coll and index.
+
 import bson, sys, subprocess, os, pprint, re
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
 from bson.binary import Binary
@@ -179,7 +184,7 @@ def main():
             print("\n__MongoDB catalog content (_mdb_catalog.wt):\n")
             for k,v in catalog.items():
                 if 'md' in v:
-                    print(f"ident: {v['ident']}\n\tnamespace: {v['md']['ns']}")
+                    print(f"namespace: {v['md']['ns']}\n\tident: {v['ident']}")
                     if "indexes" in v["md"]:
                             for i,j in enumerate(v["md"]["indexes"],1):
                                 name = j["spec"]["name"]
