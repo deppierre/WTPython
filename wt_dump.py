@@ -12,6 +12,7 @@ from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtige
 from bson.binary import Binary
 
 class WTable(object):
+    """Class to dump a WTable"""
     def __init__(self, conn, ident = None, ttype = None):
 
         self.ident = ident
@@ -77,7 +78,6 @@ class WTable(object):
                 k_v[keystring] = record_id
 
         cursor.close()
-
         return k_v
 
     def get_stats(self):
@@ -126,19 +126,9 @@ class WTable(object):
         cursor.close()
 
         return len(records)
-                
-
-    def delete_record(self, key):
-        """Function to delete one record in a table"""
-        cursor = self.get_new_cursor()
-
-        cursor.set_key(key)
-        cursor.remove()
-
-        return cursor.close()
     
 def util_usage():
-    print("Usage: wt_dump -m {<ns name>|history|log} [uri]")
+    print("Usage: wt_dump -m {<ns name>|catalog|log} [uri]")
     print("Example: wt_dump -m mydb.mycollection data/db")
     print("\t-m the intended mode or a namespace to dump a collection.")
     print("\turi is the dbPath folder in MongoDB (data/db ...).")
@@ -158,7 +148,7 @@ def main():
 
     if mode_str == "log":
         mode = "log"
-    elif mode_str == "metadata":
+    elif mode_str == "catalog":
         mode = "metadata"
     elif '.' in mode_str:
         mode = "coll_dump"
@@ -186,14 +176,18 @@ def main():
 
 
         if mode == "metadata":
-            print("MongoDB catalog content (_mdb_catalog):")
+            print("\n__MongoDB catalog content (_mdb_catalog.wt):\n")
             for k,v in catalog.items():
                 if 'md' in v:
-                    print(f"-- namespace: {v['md']['ns']} - ident: {v['ident']}")
+                    print(f"ident: {v['ident']}\n\tnamespace: {v['md']['ns']}")
+                    if "indexes" in v["md"]:
+                            for i,j in enumerate(v["md"]["indexes"],1):
+                                name = j["spec"]["name"]
+                                print(f"\tindex {i}: \n\t\tname: {j['spec']['name']}\n\t\tkey: {j['spec']['key']}\n\t\tready: {j['ready']}\n\t\tident: {v['idxIdent'][name]}")
 
             cursor = catalog_table.get_new_cursor(uri_mode="metadata")
 
-            print("\nWiredTiger catalog content (WiredTiger.wt):")
+            print("\n__WiredTiger catalog content (WiredTiger.wt):\n")
             while cursor.next() == 0:
                 if "file:" in cursor.get_key():
 
@@ -206,20 +200,15 @@ def main():
 
                     fileid = re.search(r'id=(\d+)', value)
                     log = re.search(r'enabled=([\w\d]+)', value)
-                    internal_page_max = re.search(r'internal_page_max=([\w\d]+)', value)
                     prefix_compression = re.search(r'prefix_compression=([\w\d]+)', value)
                     memory_page_max = re.search(r'memory_page_max=([\w\d]+)', value)
                     leaf_page_max = re.search(r'leaf_page_max=([\w\d]+)', value)
                     leaf_value_max = re.search(r'leaf_value_max=([\w\d]+)', value)
-                    checkpoint = re.search(r'checkpoint=\((.*?)\)', value)
-
 
                     compressor_match = re.search(r'block_compressor=(\w*)', value)
                     compressor = "none" if len(compressor_match.group(1)) == 0 else compressor_match.group(1)
 
-
-                    print(f"-- ident: {ident} - fileid: {fileid.group(1)} - log: {log.group(1)} - compressor: {compressor} - prefix compression: {prefix_compression.group(1)} - internal max page: {internal_page_max.group(1)} - memory max page: {memory_page_max.group(1)} - leaf max page: {leaf_page_max.group(1)} - leaf max value: {leaf_value_max.group(1)}")
-                    print(f"\tcheckpoint: {checkpoint.group(1)}")
+                    print(f"ident: {ident}\n\tfileid: {fileid.group(1)}\n\tlog: {log.group(1)}\n\tcompressor: {compressor}\n\tprefix compression: {prefix_compression.group(1)}\n\tmemory max page: {memory_page_max.group(1)}\n\tleaf max page: {leaf_page_max.group(1)}\n\tleaf max value: {leaf_value_max.group(1)}")
 
             catalog_table.close_session()
 
@@ -231,18 +220,37 @@ def main():
                 log_file, log_offset, opcount = cursor.get_key()
                 txnid, rectype, optype, fileid, logrec_key, logrec_value = cursor.get_value()
 
-                if optype == 4:  # Assuming WT_LOGREC_MESSAGE corresponds to 1
+                    # if optype == 4:  # Assuming WT_LOGREC_MESSAGE corresponds to 1
+                if fileid != 0:
                     try:
                         bson_obj = bson.decode_all(logrec_value)
                         bson_obj = pprint.pformat(bson_obj, indent=1).replace('\n', '\n\t  ')
                         
-                        print(f"\nLSN [{log_file}][{log_offset}].{opcount}: \nrecord type {rectype} \noptype {optype} \ntxnid {txnid} \nfileid {fileid}")
-                        print(f"key size {len(logrec_key)} value size {len(logrec_value)}")
-                        print(f"value-bson: {bson_obj}")
+                        print(f"LSN:[{log_file}][{log_offset}].{opcount}:\n\trecord type: {rectype}\n\toptype: {optype}\n\ttxnid: {txnid}\n\tfileid: {fileid}\n\tkey-hex: {logrec_key.hex()}\n\tvalue-hex: {logrec_value}\n\tvalue-bson: {bson_obj}")
                     except Exception as e:
-                        # If bsons don't appear to be printing uncomment this line for the error reason.
-                        #logging.error('Error at %s', 'division', exc_info=e)
-                        pass
+                        key = logrec_key.hex()
+                        value = logrec_value.hex()
+
+                        key += value[:4]
+                        value = value[-2:]
+
+                        ksdecode = subprocess.run(
+                            [
+                                os.path.join(os.path.dirname(__file__) or '.',"ksdecode"),
+                                "-o",
+                                "bson",
+                                "-t",
+                                value,
+                                "-r",
+                                "long",
+                                key,
+                            ],
+                            capture_output=True, check=True
+                        )
+                        key, value = ksdecode.stdout.decode("utf-8").strip().split(",")
+
+                        print(f"LSN:[{log_file}][{log_offset}].{opcount}:\n\trecord type: {rectype}\n\toptype: {optype}\n\ttxnid: {txnid}\n\tfileid: {fileid}\n\tkey-hex: {logrec_key.hex()}\n\tkey-decode: {key}\n\tvalue-hex: {logrec_value}\n\tvalue-decode: {value}")
+                        
             cursor.close()
 
         if mode == "coll_dump":
@@ -263,10 +271,12 @@ def main():
 
                 if coll_documents:
                     for k, v in coll_documents.items():
-                        print(f"- RecordID: {k}, document(bson): {v}")
+                        print(f"-- RecordID: {k}, document: {v}")
                 else:
                     print("-- 0 Documents")
-            
+
+                coll_table.close_session()
+                
             if coll_indexes:
                 for index in coll_indexes:
                     index_table = WTable(conn, ident = index["ident"], ttype = "i")
@@ -276,7 +286,6 @@ def main():
 
                     index_table.close_session()
             
-            coll_table.close_session()
         if mode == "coll_dump" and not ident:
             print(f"\nNo collection found ({collection})")
 
