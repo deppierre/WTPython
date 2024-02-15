@@ -63,23 +63,7 @@ class WTable(object):
                     key += value[:4]
                     value = value[-2:]
 
-                ksdecode = subprocess.run(
-                    [
-                        os.path.join(os.path.dirname(__file__) or '.',"ksdecode"),
-                        "-o",
-                        "bson",
-                        "-p",
-                        idx_key,
-                        "-t",
-                        value,
-                        "-r",
-                        "long",
-                        key,
-                    ],
-                    capture_output=True, check=True
-                )
-                keystring, record_id = ksdecode.stdout.decode("utf-8").strip().split(",")
-
+                keystring, record_id = decode_keystring(key, value, idx_key)
                 k_v[keystring] = record_id
 
         cursor.close()
@@ -131,12 +115,31 @@ class WTable(object):
         cursor.close()
 
         return len(records)
+
+def decode_keystring(key, value, idx_key):
+    """Function to decode a keystring"""
+    ksdecode = subprocess.run(
+        [
+            os.path.join(os.path.dirname(__file__) or '.',"ksdecode"),
+            "-o",
+            "bson",
+            "-p",
+            idx_key,
+            "-t",
+            value,
+            "-r",
+            "long",
+            key,
+        ],
+        capture_output=True, check=True
+    )
+    keystring, record_id = ksdecode.stdout.decode("utf-8").strip().split(",")
+
+    return keystring, record_id
     
 def util_usage():
-    print("Usage: wt_dump -m {<ns name>|catalog|log} [uri]")
+    print("Usage: wt_dump -m {<ns>|<wtcatalog>|<mdbcatalog>|<log>} <uri>")
     print("Example: wt_dump -m mydb.mycollection data/db")
-    print("\t-m the intended mode or a namespace to dump a collection.")
-    print("\turi is the dbPath folder in MongoDB (data/db ...).")
     sys.exit(1)
 
 def main():
@@ -153,8 +156,10 @@ def main():
 
     if mode_str == "log":
         mode = "log"
-    elif mode_str == "catalog":
-        mode = "metadata"
+    elif mode_str == "wtcatalog":
+        mode = "wtmetadata"
+    elif mode_str == "mdbcatalog":
+        mode = "mdbmetadata"
     elif '.' in mode_str:
         mode = "coll_dump"
         try:
@@ -176,87 +181,107 @@ def main():
     except _wiredtiger.WiredTigerError as e:
         print(f"Connection error ({e})")
     else:
+        mdb_catalog = {}
+        wt_catalog = {}
+        logs = []
+
+        #METADATA MDB
         catalog_table  = WTable(conn, ident = "_mdb_catalog", ttype = "c")
         catalog = catalog_table.get_ks_vs()
 
+        for k,v in catalog.items():
+            if 'md' in v:
+                mdb_catalog[v['ident']] = {
+                    "ns": v['md']['ns'],
+                    "indexes": {}
+                }
 
-        if mode == "metadata":
-            print("\n__MongoDB catalog content (_mdb_catalog.wt):\n")
-            for k,v in catalog.items():
-                if 'md' in v:
-                    print(f"namespace: {v['md']['ns']}\n\tident: {v['ident']}")
-                    if "indexes" in v["md"]:
-                            for i,j in enumerate(v["md"]["indexes"],1):
-                                name = j["spec"]["name"]
-                                print(f"\tindex {i}: \n\t\tname: {j['spec']['name']}\n\t\tkey: {j['spec']['key']}\n\t\tready: {j['ready']}\n\t\tident: {v['idxIdent'][name]}")
+                if "indexes" in v["md"]:
+                    for i in v["md"]["indexes"]:
+                        name = i["spec"]["name"]
+                        
+                        mdb_catalog[v['ident']]["indexes"][name] = {
+                            "ready": i['ready'],
+                            "key": i["spec"]["key"],
+                            "ident": v['idxIdent'][name]
+                        }
 
-            cursor = catalog_table.get_new_cursor(uri_mode="metadata")
+        #METADATA WT
+        wt_cursor = catalog_table.get_new_cursor(uri_mode="metadata")
+        
+        while wt_cursor.next() == 0:
+            if "file:" in wt_cursor.get_key():
+                #Key
+                key = wt_cursor.get_key()
+                ident = re.sub(r"^file:|\.wt$", "", key)
 
-            print("\n__WiredTiger catalog content (WiredTiger.wt):\n")
-            while cursor.next() == 0:
-                if "file:" in cursor.get_key():
+                #Values
+                value = wt_cursor.get_value()
+                fileid = re.search(r'id=(\d+)', value)
+                compressor_match = re.search(r'block_compressor=(\w*)', value)
+                compressor = "none" if len(compressor_match.group(1)) == 0 else compressor_match.group(1)
 
-                    #Key
-                    key = cursor.get_key()
-                    ident = re.sub(r"^file:|\.wt$", "", key)
 
-                    #Values
-                    value = cursor.get_value()
+                wt_catalog[ident] = {
+                    "fileid": fileid.group(1),
+                    "log": re.search(r'enabled=([\w\d]+)', value).group(1),
+                    "prefix_compression": re.search(r'prefix_compression=([\w\d]+)', value).group(1),
+                    "memory_page_max": re.search(r'memory_page_max=([\w\d]+)', value).group(1),
+                    "leaf_page_max": re.search(r'leaf_page_max=([\w\d]+)', value).group(1),
+                    "leaf_value_max": re.search(r'leaf_value_max=([\w\d]+)', value).group(1),
+                    "compressor": compressor
+                }
 
-                    fileid = re.search(r'id=(\d+)', value)
-                    log = re.search(r'enabled=([\w\d]+)', value)
-                    prefix_compression = re.search(r'prefix_compression=([\w\d]+)', value)
-                    memory_page_max = re.search(r'memory_page_max=([\w\d]+)', value)
-                    leaf_page_max = re.search(r'leaf_page_max=([\w\d]+)', value)
-                    leaf_value_max = re.search(r'leaf_value_max=([\w\d]+)', value)
+        #LOG
+        log_cursor = catalog_table.get_new_cursor(uri_mode="log")
+        while log_cursor.next() == 0:
+            log_file, log_offset, opcount = log_cursor.get_key()
+            txnid, rectype, optype, fileid, logrec_key, logrec_value = log_cursor.get_value()
 
-                    compressor_match = re.search(r'block_compressor=(\w*)', value)
-                    compressor = "none" if len(compressor_match.group(1)) == 0 else compressor_match.group(1)
+            logs.append([log_file, log_offset, opcount, txnid, rectype, optype, fileid, logrec_key, logrec_value])
+        
+        log_cursor.close()
 
-                    print(f"ident: {ident}\n\tfileid: {fileid.group(1)}\n\tlog: {log.group(1)}\n\tcompressor: {compressor}\n\tprefix compression: {prefix_compression.group(1)}\n\tmemory max page: {memory_page_max.group(1)}\n\tleaf max page: {leaf_page_max.group(1)}\n\tleaf max value: {leaf_value_max.group(1)}")
+        catalog_table.close_session()
 
-            catalog_table.close_session()
+        if mode == "mdbmetadata":
+            for k,v in mdb_catalog.items():
+                print(f"namespace: {v['ns']}\n\tident: {k}")
+
+                if "indexes" in v:
+                    for i,j in v["indexes"].items():
+                        name = i
+                        print(f"\tindex {i}: \n\t\tname: {name}\n\t\tkey: {j['key']}\n\t\tready: {j['ready']}\n\t\tident: {j['ident']}")
+
+        if mode == "wtmetadata":
+            for k,v in wt_catalog.items():
+                print(f"ident: {k}\n\tfileid: {v['fileid']}\n\tlog: {v['log']}\n\tcompressor: {v['compressor']}\n\tprefix compression: {v['prefix_compression']}\n\tmemory max page: {v['memory_page_max']}\n\tleaf max page: {v['leaf_page_max']}\n\tleaf max value: {v['leaf_value_max']}")
 
         if mode == "log":
-            cursor = catalog_table.get_new_cursor(uri_mode="log")
-
-            print("\nJournal content:")
-            while cursor.next() == 0:
-                log_file, log_offset, opcount = cursor.get_key()
-                txnid, rectype, optype, fileid, logrec_key, logrec_value = cursor.get_value()
-
-                    # if optype == 4:  # Assuming WT_LOGREC_MESSAGE corresponds to 1
-                if fileid != 0:
+            for log in logs:
+                # if optype == 4:  # Assuming WT_LOGREC_MESSAGE corresponds to 1
+                if log[6] != 0:
                     try:
-                        bson_obj = bson.decode_all(logrec_value)
+                        bson_obj = bson.decode_all(log[8])
                         bson_obj = pprint.pformat(bson_obj, indent=1).replace('\n', '\n\t  ')
                         
-                        print(f"LSN:[{log_file}][{log_offset}].{opcount}:\n\trecord type: {rectype}\n\toptype: {optype}\n\ttxnid: {txnid}\n\tfileid: {fileid}\n\tkey-hex: {logrec_key.hex()}\n\tvalue-hex: {logrec_value}\n\tvalue-bson: {bson_obj}")
+                        print(f"LSN:[{log[0]}][{log[1]}].{log[2]}:\n\trecord type: {log[4]}\n\toptype: {log[5]}\n\ttxnid: {log[3]}\n\tfileid: {log[6]}\n\tkey-hex: {log[7].hex()}\n\tvalue-hex: {log[8]}\n\tvalue-bson: {bson_obj}")
                     except Exception as e:
-                        key = logrec_key.hex()
-                        value = logrec_value.hex()
+                        key = log[7].hex()
+                        value = log[8].hex()
 
                         key += value[:4]
                         value = value[-2:]
 
-                        ksdecode = subprocess.run(
-                            [
-                                os.path.join(os.path.dirname(__file__) or '.',"ksdecode"),
-                                "-o",
-                                "bson",
-                                "-t",
-                                value,
-                                "-r",
-                                "long",
-                                key,
-                            ],
-                            capture_output=True, check=True
-                        )
-                        key, value = ksdecode.stdout.decode("utf-8").strip().split(",")
+                        print({log[6]})
 
-                        print(f"LSN:[{log_file}][{log_offset}].{opcount}:\n\trecord type: {rectype}\n\toptype: {optype}\n\ttxnid: {txnid}\n\tfileid: {fileid}\n\tkey-hex: {logrec_key.hex()}\n\tkey-decode: {key}\n\tvalue-hex: {logrec_value}\n\tvalue-decode: {value}")
-                        
-            cursor.close()
+                        key, value = decode_keystring(
+                            key,
+                            value,
+                            "{'_id': 1}"
+                        )
+
+                        print(f"LSN:[{log[0]}][{log[1]}].{log[2]}:\n\trecord type: {log[4]}\n\toptype: {log[5]}\n\ttxnid: {log[3]}\n\tfileid: {log[6]}\n\tkey-hex: {log[7].hex()}\n\tkey-decode: {key}\n\tvalue-hex: {log[8]}\n\tvalue-decode: {value}")
 
         if mode == "coll_dump":
             for k,v in catalog.items():
