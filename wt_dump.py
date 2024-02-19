@@ -138,7 +138,12 @@ def decode_keystring(key, value, idx_key):
     return keystring, record_id
     
 def util_usage():
-    print("Usage: wt_dump -m {<ns>|<wtcatalog>|<mdbcatalog>|<log>} <uri>")
+    print("Usage: wt_dump -m {<ns>|<wc>|<mc>|<l>} <uri>")
+    print("\t -ns: a namespace name")
+    print("\t -wc: WiredTiger catalog")
+    print("\t -mc: MongoDB catalog")
+    print("\t -l: WiredTiger log file")
+    print("\t -uri: Local directory (.) by default")
     print("Example: wt_dump -m mydb.mycollection data/db")
     sys.exit(1)
 
@@ -154,11 +159,11 @@ def main():
     mode_str = sys.argv[2]
     uri = "data/db" if len(sys.argv) < 4 else sys.argv[3]
 
-    if mode_str == "log":
+    if mode_str == "l":
         mode = "log"
-    elif mode_str == "wtcatalog":
+    elif mode_str == "wc":
         mode = "wtmetadata"
-    elif mode_str == "mdbcatalog":
+    elif mode_str == "mc":
         mode = "mdbmetadata"
     elif '.' in mode_str:
         mode = "coll_dump"
@@ -239,7 +244,6 @@ def main():
             txnid, rectype, optype, fileid, logrec_key, logrec_value = log_cursor.get_value()
 
             logs.append([log_file, log_offset, opcount, txnid, rectype, optype, fileid, logrec_key, logrec_value])
-        
         log_cursor.close()
 
         catalog_table.close_session()
@@ -251,21 +255,42 @@ def main():
                 if "indexes" in v:
                     for i,j in v["indexes"].items():
                         name = i
-                        print(f"\tindex {i}: \n\t\tname: {name}\n\t\tkey: {j['key']}\n\t\tready: {j['ready']}\n\t\tident: {j['ident']}")
+                        print(f"\tindex {i}:\
+                              \n\t\tname: {name}\
+                              \n\t\tkey: {j['key']}\
+                              \n\t\tready: {j['ready']}\
+                              \n\t\tident: {j['ident']}")
 
         if mode == "wtmetadata":
             for k,v in wt_catalog.items():
-                print(f"ident: {k}\n\tfileid: {v['fileid']}\n\tlog: {v['log']}\n\tcompressor: {v['compressor']}\n\tprefix compression: {v['prefix_compression']}\n\tmemory max page: {v['memory_page_max']}\n\tleaf max page: {v['leaf_page_max']}\n\tleaf max value: {v['leaf_value_max']}")
+                print(f"ident: {k}\
+                      \n\tfileid: {v['fileid']}\
+                      \n\tlog: {v['log']}\
+                      \n\tcompressor: {v['compressor']}\
+                      \n\tprefix compression: {v['prefix_compression']}\
+                      \n\tmemory max page: {v['memory_page_max']}\
+                      \n\tleaf max page: {v['leaf_page_max']}\
+                      \n\tleaf max value: {v['leaf_value_max']}")
 
         if mode == "log":
             for log in logs:
                 # if optype == 4:  # Assuming WT_LOGREC_MESSAGE corresponds to 1
-                if log[6] != 0:
+                fileid = log[6]
+
+                if fileid != 0:
                     try:
                         bson_obj = bson.decode_all(log[8])
                         bson_obj = pprint.pformat(bson_obj, indent=1).replace('\n', '\n\t  ')
                         
-                        print(f"LSN:[{log[0]}][{log[1]}].{log[2]}:\n\trecord type: {log[4]}\n\toptype: {log[5]}\n\ttxnid: {log[3]}\n\tfileid: {log[6]}\n\tkey-hex: {log[7].hex()}\n\tvalue-hex: {log[8]}\n\tvalue-bson: {bson_obj}")
+                        print(f"LSN:[{log[0]}][{log[1]}].{log[2]}:\
+                              \n\trecord type: {log[4]}\
+                              \n\toptype: {log[5]}\
+                              \n\ttxnid: {log[3]}\
+                              \n\tfileid: {fileid}\
+                              \n\tkey-hex: {log[7].hex()}\
+                              \n\tvalue-hex: {log[8]}\
+                              \n\tvalue-bson: {bson_obj}")
+                        
                     except Exception as e:
                         key = log[7].hex()
                         value = log[8].hex()
@@ -273,15 +298,28 @@ def main():
                         key += value[:4]
                         value = value[-2:]
 
-                        print({log[6]})
+                        ident = [ k for k,v in wt_catalog.items() if int(v["fileid"].strip()) == fileid ][0]
+                        # indexes = [ v["indexes"] for k,v in mdb_catalog.items() ]
 
-                        key, value = decode_keystring(
-                            key,
-                            value,
-                            "{'_id': 1}"
-                        )
+                        for k,v in mdb_catalog.items():
+                            for i,j in v["indexes"].items():
+                                if j["ident"] == ident:
+                                    idx_key = str(j["key"])
+                                    key, value = decode_keystring(
+                                        key,
+                                        value,
+                                        idx_key
+                                    )
 
-                        print(f"LSN:[{log[0]}][{log[1]}].{log[2]}:\n\trecord type: {log[4]}\n\toptype: {log[5]}\n\ttxnid: {log[3]}\n\tfileid: {log[6]}\n\tkey-hex: {log[7].hex()}\n\tkey-decode: {key}\n\tvalue-hex: {log[8]}\n\tvalue-decode: {value}")
+                                    print(f"LSN:[{log[0]}][{log[1]}].{log[2]}:\
+                                          \n\trecord type: {log[4]}\
+                                          \n\toptype: {log[5]}\
+                                          \n\ttxnid: {log[3]}\
+                                          \n\tfileid: {fileid}\
+                                          \n\tkey-hex: {log[7].hex()}\
+                                          \n\tkey-decode: {key} }}\
+                                          \n\tvalue-hex: {log[8]}\
+                                          \n\tvalue-decode: {{{value}")
 
         if mode == "coll_dump":
             for k,v in catalog.items():
