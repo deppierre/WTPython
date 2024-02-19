@@ -138,6 +138,7 @@ def decode_keystring(key, value, idx_key):
     return keystring, record_id
     
 def util_usage():
+    """Function to print help"""
     print("Usage: wt_dump -m {<ns>|<wc>|<mc>|<l>} <uri>")
     print("\t -ns: a namespace name")
     print("\t -wc: WiredTiger catalog")
@@ -148,6 +149,7 @@ def util_usage():
     sys.exit(1)
 
 def main():
+    """Main function"""
     if len(sys.argv) < 3:
         util_usage()
         exit()
@@ -178,9 +180,6 @@ def main():
     else:
         util_usage()
 
-    #Debug connection
-    # conn = wiredtiger_open(uri, 'create, cache_size=512M, session_max=33000, eviction=(threads_min=4,threads_max=4), config_base=false, statistics=(fast), log=(enabled=true,archive=true,path=journal,compressor=snappy), file_manager=(close_idle_time=100000,close_scan_interval=10,close_handle_minimum=250), statistics_log=(wait=0), verbose=(version), compatibility=(release="3.3", require_min="3.2.0")')
-    
     try:
         conn = wiredtiger_open(uri, "log=(enabled=true,path=journal,compressor=snappy),readonly=true,builtin_extension_config=(zstd=(compression_level=6))")
     except _wiredtiger.WiredTigerError as e:
@@ -273,53 +272,60 @@ def main():
                       \n\tleaf max value: {v['leaf_value_max']}")
 
         if mode == "log":
-            for log in logs:
-                # if optype == 4:  # Assuming WT_LOGREC_MESSAGE corresponds to 1
-                fileid = log[6]
+            print("Last Transaction (txnid):\n")
+            max_LSN = max([ log[1] for log in logs if log[6] not in [ 0, 2] ])
 
-                if fileid != 0:
-                    try:
-                        bson_obj = bson.decode_all(log[8])
+            for log in logs:
+                fileid = log[6]
+                current_LSN = log[1]
+                bson_hex = log[8]
+
+                if current_LSN == max_LSN and fileid != 0:
+                    if bson.is_valid(bson_hex):
+                    
+                        bson_obj = bson.decode_all(bson_hex)
                         bson_obj = pprint.pformat(bson_obj, indent=1).replace('\n', '\n\t  ')
                         
-                        print(f"LSN:[{log[0]}][{log[1]}].{log[2]}:\
+                        print(f"LSN:[{log[0]}][{current_LSN}].{log[2]}:\
                               \n\trecord type: {log[4]}\
                               \n\toptype: {log[5]}\
                               \n\ttxnid: {log[3]}\
                               \n\tfileid: {fileid}\
                               \n\tkey-hex: {log[7].hex()}\
-                              \n\tvalue-hex: {log[8]}\
+                              \n\tvalue-hex: {bson_hex}\
                               \n\tvalue-bson: {bson_obj}")
-                        
-                    except Exception as e:
-                        key = log[7].hex()
-                        value = log[8].hex()
+                    else:
+                        try:
+                            key = log[7].hex()
+                            value = bson_hex.hex()
 
-                        key += value[:4]
-                        value = value[-2:]
+                            key += value[:4]
+                            value = value[-2:]
 
-                        ident = [ k for k,v in wt_catalog.items() if int(v["fileid"].strip()) == fileid ][0]
-                        # indexes = [ v["indexes"] for k,v in mdb_catalog.items() ]
+                            ident = [ k for k,v in wt_catalog.items() if int(v["fileid"].strip()) == fileid ][0]
 
-                        for k,v in mdb_catalog.items():
-                            for i,j in v["indexes"].items():
-                                if j["ident"] == ident:
-                                    idx_key = str(j["key"])
-                                    key, value = decode_keystring(
-                                        key,
-                                        value,
-                                        idx_key
-                                    )
+                            for k,v in mdb_catalog.items():
+                                for i,j in v["indexes"].items():
+                                    if j["ident"] == ident:
+                                        idx_key = str(j["key"])
+                                        key, value = decode_keystring(
+                                            key,
+                                            value,
+                                            idx_key
+                                        )
 
-                                    print(f"LSN:[{log[0]}][{log[1]}].{log[2]}:\
-                                          \n\trecord type: {log[4]}\
-                                          \n\toptype: {log[5]}\
-                                          \n\ttxnid: {log[3]}\
-                                          \n\tfileid: {fileid}\
-                                          \n\tkey-hex: {log[7].hex()}\
-                                          \n\tkey-decode: {key} }}\
-                                          \n\tvalue-hex: {log[8]}\
-                                          \n\tvalue-decode: {{{value}")
+                                        print(f"LSN:[{log[0]}][{current_LSN}].{log[2]}:\
+                                            \n\trecord type: {log[4]}\
+                                            \n\toptype: {log[5]}\
+                                            \n\ttxnid: {log[3]}\
+                                            \n\tfileid: {fileid}\
+                                            \n\tkey-hex: {log[7].hex()}\
+                                            \n\tkey-decode: {key} }}\
+                                            \n\tvalue-hex: {bson_hex}\
+                                            \n\tvalue-decode: {{{value}")
+                        except:
+                            print(f"LSN:[{log[0]}][{current_LSN}].{log[2]}:\
+                                  Unknown format")
 
         if mode == "coll_dump":
             for k,v in catalog.items():
