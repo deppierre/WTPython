@@ -324,8 +324,7 @@ def main():
                                             \n\tvalue-hex: {bson_hex}\
                                             \n\tvalue-decode: {{{value}")
                         except:
-                            print(f"LSN:[{log[0]}][{current_LSN}].{log[2]}:\
-                                  Unknown format")
+                            print(f"LSN:[{log[0]}][{current_LSN}].{log[2]}: Unknown format")
 
         if mode == "coll_dump":
             for k,v in catalog.items():
