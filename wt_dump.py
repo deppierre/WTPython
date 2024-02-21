@@ -25,8 +25,8 @@ class WTable(object):
 
         self.__session = conn.open_session()
 
-        if self.ident != "_mdb_catalog":
-            print(f"\nNew Session ({ident})")
+        if self.ident != "_mdb_catalog" and ttype is not None:
+            print(f"\nNew Session ({ident}):")
 
     def checkpoint_session(self):
         """Function to Checkpoint a session"""
@@ -34,15 +34,17 @@ class WTable(object):
         print("Checkpoint done")
         return self.__session.checkpoint()
 
-    def get_new_cursor(self, uri_mode = None):
+    def get_new_cursor(self, uri = None):
         """Function to create a new cursor"""
 
-        if uri_mode == "statistics":
+        if uri == "statistics":
             return self.__session.open_cursor(f"statistics:table:{self.ident}", None, "append")
-        elif uri_mode == "log":
+        elif uri == "log":
             return self.__session.open_cursor("log:")
-        elif uri_mode == "metadata":
+        elif uri == "metadata":
             return self.__session.open_cursor("metadata:")
+        elif uri == "hs":
+            return self.__session.open_cursor("file:WiredTigerHS.wt", None, 'checkpoint=WiredTigerCheckpoint')
         else:
             return self.__session.open_cursor(f"table:{self.ident}", None, "append")
     
@@ -71,7 +73,8 @@ class WTable(object):
 
     def get_stats(self):
         """Function to get stats of a table"""
-        cursor = self.get_new_cursor(uri_mode="statistics")
+        
+        cursor = self.get_new_cursor(uri="statistics")
 
         stat_output = []
         stat_filter = [
@@ -167,6 +170,8 @@ def main():
         mode = "wtmetadata"
     elif mode_str == "mc":
         mode = "mdbmetadata"
+    elif mode_str == "hs":
+        mode = "historystore"
     elif '.' in mode_str:
         mode = "coll_dump"
         try:
@@ -181,17 +186,18 @@ def main():
         util_usage()
 
     try:
-        conn = wiredtiger_open(uri, "log=(enabled=true,path=journal,compressor=snappy),readonly=true,builtin_extension_config=(zstd=(compression_level=6))")
+        conn = wiredtiger_open(uri, "log=(enabled=true,path=journal,compressor=snappy),readonly=true,builtin_extension_config=(zstd=(compression_level=6)),statistics=(all)")
     except _wiredtiger.WiredTigerError as e:
         print(f"Connection error ({e})")
     else:
         mdb_catalog = {}
         wt_catalog = {}
+        wt_hs = {}
         logs = []
 
         #METADATA MDB
-        catalog_table  = WTable(conn, ident = "_mdb_catalog", ttype = "c")
-        catalog = catalog_table.get_ks_vs()
+        new_catalog_  = WTable(conn, ident = "_mdb_catalog", ttype = "c")
+        catalog = new_catalog_.get_ks_vs()
 
         for k,v in catalog.items():
             if 'md' in v:
@@ -211,7 +217,7 @@ def main():
                         }
 
         #METADATA WT
-        wt_cursor = catalog_table.get_new_cursor(uri_mode="metadata")
+        wt_cursor = new_catalog_.get_new_cursor(uri="metadata")
         
         while wt_cursor.next() == 0:
             if "file:" in wt_cursor.get_key():
@@ -237,7 +243,7 @@ def main():
                 }
 
         #LOG
-        log_cursor = catalog_table.get_new_cursor(uri_mode="log")
+        log_cursor = new_catalog_.get_new_cursor(uri="log")
         while log_cursor.next() == 0:
             log_file, log_offset, opcount = log_cursor.get_key()
             txnid, rectype, optype, fileid, logrec_key, logrec_value = log_cursor.get_value()
@@ -245,8 +251,23 @@ def main():
             logs.append([log_file, log_offset, opcount, txnid, rectype, optype, fileid, logrec_key, logrec_value])
         log_cursor.close()
 
-        catalog_table.close_session()
 
+        #HS
+        # try:
+        #     wt_hs_cursor = new_catalog_.get_new_cursor(uri="hs")
+
+        #     if len(list(wt_hs_cursor)) > 0:
+        #         for _, _, hs_start_ts, _, hs_stop_ts, _, type, value in wt_hs_cursor:
+        #             print(_, _, hs_start_ts, _, hs_stop_ts, _, type, value)
+        #     else:
+        #         print("History store is empty")
+        # except _wiredtiger.WiredTigerError as e:
+        #     print(f"Catalog error\n{e}")
+
+        new_catalog_.close_session()
+
+        if mode == "historystore":
+            pass
         if mode == "mdbmetadata":
             for k,v in mdb_catalog.items():
                 print(f"namespace: {v['ns']}\n\tident: {k}")
@@ -273,14 +294,13 @@ def main():
 
         if mode == "log":
             print("Last Transaction (txnid):\n")
-            max_LSN = max([ log[1] for log in logs if log[6] not in [ 0, 2] ])
 
             for log in logs:
                 fileid = log[6]
                 current_LSN = log[1]
                 bson_hex = log[8]
 
-                if current_LSN == max_LSN and fileid != 0:
+                if fileid != 0:
                     if bson.is_valid(bson_hex):
                     
                         bson_obj = bson.decode_all(bson_hex)
@@ -320,9 +340,9 @@ def main():
                                             \n\ttxnid: {log[3]}\
                                             \n\tfileid: {fileid}\
                                             \n\tkey-hex: {log[7].hex()}\
-                                            \n\tkey-decode: {key} }}\
+                                            \n\tkey-decode: {key}\
                                             \n\tvalue-hex: {bson_hex}\
-                                            \n\tvalue-decode: {{{value}")
+                                            \n\tvalue-decode: {value}")
                         except:
                             print(f"LSN:[{log[0]}][{current_LSN}].{log[2]}: Unknown format")
 
