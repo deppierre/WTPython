@@ -13,6 +13,7 @@
 # 3- you can pass a bunch of options to WT, and some of them can be applied at the table level like compression, page size etc ... notice different between coll and index.
 
 import bson, sys, subprocess, os, pprint, re
+from regex import P
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
 from bson.binary import Binary
 
@@ -91,6 +92,9 @@ class WTable(object):
 
         return stat_output
 
+    def verify(self):
+        return self.__session.verify(f"table:{self.ident}", "dump_address")
+
     def drop_table(self):
         """Function to drop a table"""
 
@@ -121,22 +125,29 @@ class WTable(object):
 
 def decode_keystring(key, value, idx_key):
     """Function to decode a keystring"""
-    ksdecode = subprocess.run(
-        [
-            os.path.join(os.path.dirname(__file__) or '.',"ksdecode"),
-            "-o",
-            "bson",
-            "-p",
-            idx_key,
-            "-t",
-            value,
-            "-r",
-            "long",
-            key,
-        ],
-        capture_output=True, check=True
-    )
-    keystring, record_id = ksdecode.stdout.decode("utf-8").strip().split(",")
+
+    try:
+        ksdecode = subprocess.run(
+            [
+                os.path.join(os.path.dirname(__file__) or '.',"ksdecode"),
+                "-o",
+                "bson",
+                "-p",
+                idx_key,
+                "-t",
+                value,
+                "-r",
+                "long",
+                key,
+            ],
+            capture_output=True, check=True
+        )
+        if ksdecode.returncode == 0:
+            keystring, record_id = ksdecode.stdout.decode("utf-8").strip().split(",")
+
+    except subprocess.CalledProcessError:
+        keystring, record_id = None, None
+        # print(f"Error Keystring decoding {key, value, idx_key}")
 
     return keystring, record_id
     
@@ -170,8 +181,8 @@ def main():
         mode = "wtmetadata"
     elif mode_str == "mc":
         mode = "mdbmetadata"
-    elif mode_str == "hs":
-        mode = "historystore"
+    elif mode_str == "t":
+        mode = "test"
     elif '.' in mode_str:
         mode = "coll_dump"
         try:
@@ -266,7 +277,8 @@ def main():
 
         new_catalog_.close_session()
 
-        if mode == "historystore":
+        if mode == "test":
+            print("Test mode")
             pass
         if mode == "mdbmetadata":
             for k,v in mdb_catalog.items():
@@ -375,7 +387,8 @@ def main():
                     index_table = WTable(conn, ident = index["ident"], ttype = "i")
 
                     for k, v in index_table.get_ks_vs(idx_key = str(index["key"])).items():
-                        print(f"-- KeyString: {{ {k[1:].strip()} }}, RecordID: {v.split(':')[1][:-1].strip()}")
+                        if k or v is not None:
+                            print(f"-- KeyString: {{ {k[1:].strip()} }}, RecordID: {v.split(':')[1][:-1].strip()}")
 
                     index_table.close_session()
             
@@ -383,4 +396,7 @@ def main():
             print(f"\nNo collection found ({collection})")
 
 if __name__ == "__main__":
+    DEBUG = False
     main()
+    sys.exit(0)
+    
