@@ -1,11 +1,4 @@
 #!/usr/bin/env python
-# Example of commands:
-#   ./wt_dump.py -m mytestdb2.colleyction /data/db
-#   ./wt_dump.py -m log /data/db
-# To setup a lab:
-#   mlaunch init --single --wiredTigerCacheSizeGB 0.5 --host localhost --port 27017
-# Import data:
-#   mongoimport "mongodb://localhost:27017" -d test -c collection /Users/pdepretz/0_m/tests/people.json
 
 import bson, sys, subprocess, os, pprint, re
 from regex import P
