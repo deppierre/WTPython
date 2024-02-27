@@ -7,11 +7,6 @@
 # Import data:
 #   mongoimport "mongodb://localhost:27017" -d test -c collection /Users/pdepretz/0_m/tests/people.json
 
-# Demo:
-# 1- catalog is the central piece: WT only knows an object called ident, a table. So first MDB has to go through the catalog to identify the table supporting your index and collection. The catalog is updated everytime you create a new collection or index. MDB choose the ident name by itself, so WT will just create it using the name provided by MDB.
-# 2- dump ns. thats how we can map our indexes with collection. MDB will test the indexes in the catalog to select the best plan
-# 3- you can pass a bunch of options to WT, and some of them can be applied at the table level like compression, page size etc ... notice different between coll and index.
-
 import bson, sys, subprocess, os, pprint, re
 from regex import P
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
@@ -126,6 +121,9 @@ class WTable(object):
 def decode_keystring(key, value, idx_key):
     """Function to decode a keystring"""
 
+    keystring, record_id = None, None
+
+
     try:
         ksdecode = subprocess.run(
             [
@@ -143,10 +141,13 @@ def decode_keystring(key, value, idx_key):
             capture_output=True, check=True
         )
         if ksdecode.returncode == 0:
-            keystring, record_id = ksdecode.stdout.decode("utf-8").strip().split(",")
+            output = ksdecode.stdout.decode("utf-8").strip().split(",")
+
+            record_id = output[-1].replace("}", "").strip()
+            keystring = ",".join(output[0:-1]) + " }"
 
     except subprocess.CalledProcessError:
-        keystring, record_id = None, None
+        pass
         # print(f"Error Keystring decoding {key, value, idx_key}")
 
     return keystring, record_id
@@ -164,7 +165,7 @@ def util_usage():
 
 def main():
     """Main function"""
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 3 or len(sys.argv) > 4:
         util_usage()
         exit()
 
@@ -186,9 +187,7 @@ def main():
     elif '.' in mode_str:
         mode = "coll_dump"
         try:
-            namespace = mode_str.split('.')
-            database = namespace[0]
-            collection = namespace[1]
+            namespace = mode_str
             ident = None
             coll_indexes = []
         except IndexError:
@@ -220,11 +219,17 @@ def main():
                 if "indexes" in v["md"]:
                     for i in v["md"]["indexes"]:
                         name = i["spec"]["name"]
+                        try:
+                            unique = i["spec"]["unique"]
+                        except KeyError:
+                            unique = False
                         
                         mdb_catalog[v['ident']]["indexes"][name] = {
                             "ready": i['ready'],
                             "key": i["spec"]["key"],
-                            "ident": v['idxIdent'][name]
+                            "unique": unique,
+                            "ident": v['idxIdent'][name],
+                            "multikeyPaths": i["multikeyPaths"]
                         }
 
         #METADATA WT
@@ -264,22 +269,23 @@ def main():
 
 
         #HS
-        # try:
-        #     wt_hs_cursor = new_catalog_.get_new_cursor(uri="hs")
+        try:
+            wt_hs_cursor = new_catalog_.get_new_cursor(uri="hs")
 
-        #     if len(list(wt_hs_cursor)) > 0:
-        #         for _, _, hs_start_ts, _, hs_stop_ts, _, type, value in wt_hs_cursor:
-        #             print(_, _, hs_start_ts, _, hs_stop_ts, _, type, value)
-        #     else:
-        #         print("History store is empty")
-        # except _wiredtiger.WiredTigerError as e:
-        #     print(f"Catalog error\n{e}")
+            if len(list(wt_hs_cursor)) > 0:
+                for _, _, hs_start_ts, _, hs_stop_ts, _, type, value in wt_hs_cursor:
+                    print(_, _, hs_start_ts, _, hs_stop_ts, _, type, value)
+            else:
+                print("History store is empty")
+        except _wiredtiger.WiredTigerError as e:
+            print(f"Catalog error\n{e}")
 
         new_catalog_.close_session()
 
         if mode == "test":
             print("Test mode")
             pass
+
         if mode == "mdbmetadata":
             for k,v in mdb_catalog.items():
                 print(f"namespace: {v['ns']}\n\tident: {k}")
@@ -291,6 +297,8 @@ def main():
                               \n\t\tname: {name}\
                               \n\t\tkey: {j['key']}\
                               \n\t\tready: {j['ready']}\
+                              \n\t\tunique: {j['unique']}\
+                              \n\t\tmultikeyPaths: {j['multikeyPaths']}\
                               \n\t\tident: {j['ident']}")
 
         if mode == "wtmetadata":
@@ -305,6 +313,7 @@ def main():
                       \n\tleaf max value: {v['leaf_value_max']}")
 
         if mode == "log":
+            ident = None
             print("Last Transaction (txnid):\n")
 
             for log in logs:
@@ -359,8 +368,9 @@ def main():
                             print(f"LSN:[{log[0]}][{current_LSN}].{log[2]}: Unknown format")
 
         if mode == "coll_dump":
+            ident = None
             for k,v in catalog.items():
-                if 'md' in v and v["md"]["ns"] == database + "." + collection:
+                if 'md' in v and v["md"]["ns"] == namespace:
                         ident = v["ident"]
                         if "indexes" in v["md"]:
                             for index in v["md"]["indexes"]:
@@ -370,13 +380,14 @@ def main():
                                     "name": name,
                                     "ident": v["idxIdent"][name]
                                 })
+
             if ident:
                 coll_table  = WTable(conn, ident = ident, ttype = "c")
                 coll_documents = coll_table.get_ks_vs()
 
                 if coll_documents:
                     for k, v in coll_documents.items():
-                        print(f"-- RecordID: {k}, document: {v}")
+                        print(f"-- $recordId: {k}, {v}")
                 else:
                     print("-- 0 Documents")
 
@@ -388,15 +399,14 @@ def main():
 
                     for k, v in index_table.get_ks_vs(idx_key = str(index["key"])).items():
                         if k or v is not None:
-                            print(f"-- KeyString: {{ {k[1:].strip()} }}, RecordID: {v.split(':')[1][:-1].strip()}")
+                            print(f"-- KeyString: {k.strip()}, {v.strip()}")
 
                     index_table.close_session()
             
         if mode == "coll_dump" and not ident:
-            print(f"\nNo collection found ({collection})")
+            print(f"\nNo collection found ({namespace})")
 
 if __name__ == "__main__":
     DEBUG = False
     main()
     sys.exit(0)
-    
