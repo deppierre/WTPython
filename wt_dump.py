@@ -55,7 +55,11 @@ class WTable(object):
                     value = value[-2:]
 
                 keystring, record_id = decode_keystring(key, value, idx_key)
-                k_v[keystring] = record_id
+
+                if keystring in k_v:
+                    k_v[keystring].append(record_id)
+                else:
+                    k_v[keystring] = [ record_id ]
 
         cursor.close()
         return k_v
@@ -189,7 +193,7 @@ def main():
         util_usage()
 
     try:
-        conn = wiredtiger_open(uri, "log=(enabled=true,path=journal,compressor=snappy),readonly=true,builtin_extension_config=(zstd=(compression_level=6)),statistics=(all)")
+        conn = wiredtiger_open(uri, "log=(enabled=true,path=journal,compressor=snappy),readonly=true,statistics=(all)")
     except _wiredtiger.WiredTigerError as e:
         print(f"Connection error ({e})")
     else:
@@ -392,7 +396,12 @@ def main():
 
                     for k, v in index_table.get_ks_vs(idx_key = str(index["key"])).items():
                         if k or v is not None:
-                            print(f"-- KeyString: {k.strip()}, {v.strip()}")
+                            if len(v) == 1:
+                                print(f"-- KeyString: {k.strip()}, {v[0].strip()}")
+                            elif len(v) > 1:
+                                for recordid in v:
+                                    print(f"-- KeyString: {k.strip()}, {recordid.strip()}")
+
 
                     index_table.close_session()
             
