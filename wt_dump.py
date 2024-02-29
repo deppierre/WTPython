@@ -331,7 +331,7 @@ def main():
                               \n\ttxnid: {log[3]}\
                               \n\tfileid: {fileid}\
                               \n\tkey-hex: {log[7].hex()}\
-                              \n\tvalue-hex: {bson_hex}\
+                              \n\tvalue-hex: {bson_hex.hex()}\
                               \n\tvalue-bson: {bson_obj}")
                     else:
                         try:
@@ -360,7 +360,7 @@ def main():
                                             \n\tfileid: {fileid}\
                                             \n\tkey-hex: {log[7].hex()}\
                                             \n\tkey-decode: {key}\
-                                            \n\tvalue-hex: {bson_hex}\
+                                            \n\tvalue-hex: {bson_hex.hex()}\
                                             \n\tvalue-decode: {value}")
                         except:
                             print(f"LSN:[{log[0]}][{current_LSN}].{log[2]}: Unknown format")
