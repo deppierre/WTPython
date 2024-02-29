@@ -210,6 +210,7 @@ def main():
             if 'md' in v:
                 mdb_catalog[v['ident']] = {
                     "ns": v['md']['ns'],
+                    "UUID": v['md']['options']['uuid'],
                     "indexes": {}
                 }
 
@@ -285,7 +286,7 @@ def main():
 
         if mode == "mdbmetadata":
             for k,v in mdb_catalog.items():
-                print(f"namespace: {v['ns']}\n\tident: {k}")
+                print(f"namespace: {v['ns']}\n\tident: {k}\n\tuuid: {v['UUID'].hex()}")
 
                 if "indexes" in v:
                     for i,j in v["indexes"].items():
