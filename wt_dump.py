@@ -1,9 +1,9 @@
-#!/usr/bin/env python
+#!/usr/local/bin/python
 
-import bson, sys, subprocess, os, pprint, re
+import sys, subprocess, os, pprint, re
+import pymongo, bson
 from regex import P
 from wiredtiger import wiredtiger_open,WIREDTIGER_VERSION_STRING,stat,_wiredtiger
-from bson.binary import Binary
 
 class WTable(object):
     """Class to dump a WTable"""
@@ -151,13 +151,13 @@ def decode_keystring(key, value, idx_key):
     
 def util_usage():
     """Function to print help"""
-    print("Usage: wt_dump -m {<ns>|<wc>|<mc>|<l>} <uri>")
+    print("Usage: ./wt_dump.py -m {<ns>|<wc>|<mc>|<l>} <uri>")
     print("\t -ns: a namespace name")
     print("\t -wc: WiredTiger catalog")
     print("\t -mc: MongoDB catalog")
     print("\t -l: WiredTiger log file")
     print("\t -uri: Local directory (.) by default")
-    print("Example: wt_dump -m mydb.mycollection data/db")
+    print("Example: ./wt_dump.py -m mydb.mycollection /data")
     sys.exit(1)
 
 def main():
