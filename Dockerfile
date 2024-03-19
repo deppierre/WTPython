@@ -1,6 +1,3 @@
-#docker build -t wiredtiger .
-#docker run --name wiredtiger -v /Users/pierre.depretz/Documents/2_git/WTPython/data/db:/data wiredtiger ./wt_dump.py -m mydb.mycollection /data
-
 FROM python:3.9
 
 ENV CMAKE_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu
